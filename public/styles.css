@@ -1,3 +1,13 @@
+/* Photoscroller styles.
+   Mobile notes:
+   - sizes use 100svh (small viewport height) so a photo always fits while mobile
+     browser chrome slides in and out, with 100vh as the fallback;
+   - everything pinned to an edge respects env(safe-area-inset-*) for notches,
+     rounded corners and the home indicator;
+   - @media (hover: none) / (pointer: coarse) gives 44px tap targets, a caption
+     that stays visible (there is no hover on a phone) and 16px inputs (stops iOS
+     zooming the page when a field is focused). */
+
 :root {
   --bg: #0b0b0f;
   --bg-2: #14141b;
@@ -9,6 +19,19 @@
   --accent-2: #a29bfe;
   --radius: 14px;
   --topbar: 56px;
+
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --topbar-total: calc(var(--topbar) + var(--safe-top, 0px));
+
+  --viewport: 100vh;
+  --tap: 44px;
+}
+
+@supports (height: 100svh) {
+  :root { --viewport: 100svh; }
 }
 
 * { box-sizing: border-box; }
@@ -21,6 +44,8 @@ html, body {
   color: var(--text);
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 a { color: inherit; text-decoration: none; }
@@ -32,13 +57,14 @@ a { color: inherit; text-decoration: none; }
 .topbar {
   position: fixed;
   inset: 0 0 auto 0;
-  height: var(--topbar);
+  height: var(--topbar-total);
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 0 14px;
+  gap: 12px;
+  padding: var(--safe-top, 0px) calc(14px + var(--safe-right, 0px)) 0 calc(14px + var(--safe-left, 0px));
   background: rgba(11, 11, 15, .82);
   backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--line);
   z-index: 40;
 }
@@ -57,10 +83,12 @@ a { color: inherit; text-decoration: none; }
   gap: 7px;
   overflow-x: auto;
   scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
   flex: 1 1 auto;
   padding: 4px 0;
 }
 .chips::-webkit-scrollbar { display: none; }
+.chips:empty { display: none; }
 
 .chip {
   flex: 0 0 auto;
@@ -95,6 +123,7 @@ a { color: inherit; text-decoration: none; }
   font-weight: 550;
   cursor: pointer;
   transition: .15s;
+  touch-action: manipulation;
 }
 .btn:hover { filter: brightness(1.1); }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
@@ -111,6 +140,7 @@ a { color: inherit; text-decoration: none; }
   font: inherit;
   font-size: 13px;
   cursor: pointer;
+  touch-action: manipulation;
 }
 .icon-btn:hover { color: var(--text); }
 
@@ -118,24 +148,29 @@ a { color: inherit; text-decoration: none; }
 
 .app { height: 100%; }
 
-.feed-view { height: 100%; padding-top: var(--topbar); }
+.feed-view { height: 100%; padding-top: var(--topbar-total); }
 
 .feed {
-  height: calc(100% - 0px);
+  height: 100%;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   scroll-snap-type: y mandatory;
   overscroll-behavior-y: contain;
+  touch-action: pan-y;
   scrollbar-width: thin;
   scrollbar-color: #2c2c3a transparent;
   outline: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 .feed::-webkit-scrollbar { width: 8px; }
 .feed::-webkit-scrollbar-thumb { background: #2c2c3a; border-radius: 8px; }
 
 .item {
   position: relative;
-  height: calc(100vh - var(--topbar));
+  height: calc(var(--viewport) - var(--topbar-total));
   scroll-snap-align: start;
+  scroll-snap-stop: always;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -152,13 +187,14 @@ a { color: inherit; text-decoration: none; }
   cursor: zoom-in;
   opacity: 0;
   transition: opacity .35s ease;
+  touch-action: manipulation;
 }
 .item img.loaded { opacity: 1; }
 
 .item .meta {
   position: absolute;
-  left: 16px;
-  bottom: 14px;
+  left: calc(16px + var(--safe-left, 0px));
+  bottom: calc(14px + var(--safe-bottom, 0px));
   display: flex;
   gap: 8px;
   align-items: center;
@@ -169,9 +205,11 @@ a { color: inherit; text-decoration: none; }
   font-size: 12px;
   color: var(--muted);
   backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   opacity: 0;
   transition: opacity .2s;
-  max-width: calc(100% - 32px);
+  max-width: calc(100% - 32px - var(--safe-left, 0px) - var(--safe-right, 0px));
+  pointer-events: none;
 }
 .item:hover .meta, .item.show-meta .meta { opacity: 1; }
 .item .meta b { color: var(--text); font-weight: 550; }
@@ -187,10 +225,12 @@ a { color: inherit; text-decoration: none; }
 /* ---------- album grid ---------- */
 
 .albums-view {
-  padding: calc(var(--topbar) + 22px) 20px 60px;
+  padding: calc(var(--topbar-total) + 22px) calc(20px + var(--safe-right, 0px))
+           calc(60px + var(--safe-bottom, 0px)) calc(20px + var(--safe-left, 0px));
   max-width: 1200px;
   margin: 0 auto;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   height: 100%;
 }
 
@@ -210,8 +250,10 @@ a { color: inherit; text-decoration: none; }
   background: var(--bg-2);
   border: 1px solid var(--line);
   transition: .18s;
+  -webkit-tap-highlight-color: transparent;
 }
 .album-card:hover { transform: translateY(-2px); border-color: #3a3a4d; }
+.album-card:active { transform: scale(.985); }
 
 .album-card .thumb {
   aspect-ratio: 4 / 3;
@@ -231,22 +273,22 @@ a { color: inherit; text-decoration: none; }
 
 .empty {
   position: absolute;
-  inset: var(--topbar) 0 0 0;
+  inset: var(--topbar-total) 0 0 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 10px;
   text-align: center;
-  padding: 24px;
+  padding: 24px calc(24px + var(--safe-right, 0px)) calc(24px + var(--safe-bottom, 0px)) calc(24px + var(--safe-left, 0px));
 }
 .empty h2 { margin: 0; font-size: 20px; }
 .empty p { margin: 0 0 8px; color: var(--muted); max-width: 42ch; }
 
 .hud {
   position: fixed;
-  right: 14px;
-  bottom: 14px;
+  right: calc(14px + var(--safe-right, 0px));
+  bottom: calc(14px + var(--safe-bottom, 0px));
   padding: 6px 12px;
   border-radius: 999px;
   background: rgba(10, 10, 14, .8);
@@ -255,6 +297,8 @@ a { color: inherit; text-decoration: none; }
   color: var(--muted);
   z-index: 30;
   backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  pointer-events: none;
 }
 
 .zoom {
@@ -266,12 +310,31 @@ a { color: inherit; text-decoration: none; }
   align-items: center;
   justify-content: center;
   overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  touch-action: pan-x pan-y;
 }
-.zoom img { max-width: none; max-height: none; cursor: zoom-out; }
+.zoom img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  cursor: zoom-in;
+  touch-action: manipulation;
+}
+/* full-size view: block + auto margins keeps every edge of a huge photo
+   reachable (flex centring clips the top/left once the image overflows) */
+.zoom.actual { display: block; }
+.zoom.actual img {
+  display: block;
+  margin: auto;
+  max-width: none;
+  max-height: none;
+  cursor: zoom-out;
+}
 .zoom-close {
   position: fixed;
-  top: 14px;
-  right: 14px;
+  top: calc(14px + var(--safe-top, 0px));
+  right: calc(14px + var(--safe-right, 0px));
   padding: 8px 14px;
   border-radius: 10px;
   border: 1px solid var(--line);
@@ -279,11 +342,32 @@ a { color: inherit; text-decoration: none; }
   color: var(--text);
   font: inherit;
   cursor: pointer;
+  touch-action: manipulation;
+}
+.zoom-hint {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(16px + var(--safe-bottom, 0px));
+  padding: 6px 13px;
+  border-radius: 999px;
+  background: rgba(10, 10, 14, .72);
+  border: 1px solid rgba(255, 255, 255, .08);
+  color: var(--muted);
+  font-size: 12px;
+  pointer-events: none;
+  text-align: center;
+  max-width: calc(100% - 28px - var(--safe-left, 0px) - var(--safe-right, 0px));
 }
 
 /* ---------- admin ---------- */
 
-.page { padding: calc(var(--topbar) + 26px) 20px 60px; max-width: 880px; margin: 0 auto; }
+.page {
+  padding: calc(var(--topbar-total) + 26px) calc(20px + var(--safe-right, 0px))
+           calc(60px + var(--safe-bottom, 0px)) calc(20px + var(--safe-left, 0px));
+  max-width: 880px;
+  margin: 0 auto;
+}
 .page h1 { margin: 0 0 6px; font-size: 24px; letter-spacing: -.02em; }
 .page .lead { color: var(--muted); margin: 0 0 24px; }
 
@@ -320,11 +404,14 @@ input:focus { outline: 2px solid rgba(108, 92, 231, .55); outline-offset: 0; bor
   cursor: pointer;
   transition: .15s;
   background: rgba(255, 255, 255, .012);
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 .dropzone:hover, .dropzone.over { border-color: var(--accent); color: var(--text); background: rgba(108, 92, 231, .07); }
 .dropzone strong { display: block; color: var(--text); margin-bottom: 4px; font-weight: 550; }
 
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 16px; }
+.row .btn { flex: 0 1 auto; }
 
 .bar {
   height: 7px;
@@ -354,13 +441,70 @@ input:focus { outline: 2px solid rgba(108, 92, 231, .55); outline-offset: 0; bor
 .album-list .grow { flex: 1 1 auto; min-width: 0; }
 .album-list .grow strong { display: block; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .album-list .grow small { color: var(--muted); }
+.album-list .actions { display: flex; gap: 8px; flex: 0 0 auto; }
 
 .msg { margin-top: 14px; font-size: 13.5px; }
 .msg.ok { color: #6ee7a8; }
 .msg.err { color: #ff8095; }
 .msg.work { color: var(--muted); }
+.msg ul { margin: 6px 0 0; padding-left: 18px; }
+.msg li { margin: 2px 0; }
 
-@media (max-width: 640px) {
+/* ---------- small screens ---------- */
+
+@media (max-width: 720px) {
+  .album-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+  .album-card .info { padding: 9px 11px 11px; }
+  .album-card .info strong { font-size: 13.5px; }
+  .page h1 { font-size: 21px; }
+  .card { padding: 16px; }
+  .topbar { gap: 9px; }
+}
+
+@media (max-width: 400px) {
+  .album-grid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 10px; }
   .brand span { display: none; }
-  .item { height: calc(100svh - var(--topbar)); }
+}
+
+/* ---------- touch devices ---------- */
+
+@media (hover: none), (pointer: coarse) {
+  /* no hover, so the caption stays visible */
+  .item .meta { opacity: .85; font-size: 12.5px; }
+  .item:hover .meta { opacity: .85; }
+
+  /* comfortable tap targets */
+  .chip { padding: 9px 15px; font-size: 13.5px; }
+  .btn { padding: 12px 18px; }
+  .btn.small { padding: 10px 15px; font-size: 14px; min-height: var(--tap); }
+  .icon-btn { padding: 9px 14px; font-size: 14px; min-height: 38px; }
+  .zoom-close { padding: 12px 18px; min-height: var(--tap); font-size: 15px; }
+  .album-list .btn { min-height: var(--tap); }
+  .album-list li { flex-wrap: wrap; }
+  .album-list .actions { flex: 1 1 100%; }
+  .album-list .actions .btn { flex: 1 1 auto; text-align: center; }
+
+  /* 16px keeps iOS from zooming the page when a field is focused */
+  input[type="text"], input[type="password"] { font-size: 16px; padding: 13px 14px; }
+
+  .dropzone { padding: 34px 18px; }
+  .dropzone strong { font-size: 16px; }
+
+  .btn, .icon-btn, .chip, .dropzone, .album-card, .zoom-close { -webkit-tap-highlight-color: transparent; }
+}
+
+/* ---------- landscape phones: keep the photo and the bar compact ---------- */
+
+@media (max-height: 480px) and (orientation: landscape) {
+  :root { --topbar: 48px; }
+  .item { padding: 6px; }
+  .item .meta { bottom: calc(8px + var(--safe-bottom, 0px)); }
+  .zoom-hint { display: none; }
+}
+
+/* ---------- users who ask for less motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .item img, .album-card, .btn, .bar > i, .item .meta { transition: none; }
+  .feed { scroll-behavior: auto; }
 }
