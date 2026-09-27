@@ -26,12 +26,19 @@
   --safe-left: env(safe-area-inset-left, 0px);
   --topbar-total: calc(var(--topbar) + var(--safe-top, 0px));
 
-  --viewport: 100vh;
+  /* --screen is the height of one feed screen: app.js overwrites it with the real
+     measured height of the scroll container, so the snap point is exactly one
+     visible screen in every browser. The fallbacks only cover the first paint.
+     --app-h is the whole visible viewport, used by the zoom overlay (a fixed
+     element sizes against the *large* viewport on iOS Safari, which puts the bottom
+     of an overlay below the fold). */
+  --screen: 100vh;
+  --app-h: 100vh;
   --tap: 44px;
 }
 
 @supports (height: 100svh) {
-  :root { --viewport: 100svh; }
+  :root { --screen: 100svh; --app-h: 100svh; }
 }
 
 * { box-sizing: border-box; }
@@ -143,6 +150,12 @@ a { color: inherit; text-decoration: none; }
   touch-action: manipulation;
 }
 .icon-btn:hover { color: var(--text); }
+/* toggles (Blur) show their state by filling in, so the label never has to change */
+.icon-btn[aria-pressed="true"] {
+  background: linear-gradient(180deg, var(--accent), #5a4bd6);
+  border-color: transparent;
+  color: #fff;
+}
 
 /* ---------- feed ---------- */
 
@@ -166,28 +179,39 @@ a { color: inherit; text-decoration: none; }
 .feed::-webkit-scrollbar { width: 8px; }
 .feed::-webkit-scrollbar-thumb { background: #2c2c3a; border-radius: 8px; }
 
+/* One photo per screen. The height is a single measured number (--screen), never a
+   viewport unit mixed with a percentage chain: iOS Safari resolves 100svh and the
+   html/body height:100% chain against different boxes, which used to make every item
+   taller than the area showing it — a sliver of the next photo, a clipped bottom edge
+   and jittery mandatory snapping. */
 .item {
   position: relative;
-  height: calc(var(--viewport) - var(--topbar-total));
+  height: var(--screen);
+  min-height: var(--screen);
   scroll-snap-align: start;
   scroll-snap-stop: always;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: block;
   padding: 10px;
   background: var(--bg);
+  overflow: hidden;
 }
 
+/* The <img> box is the whole screen and object-fit scales the photo to fit inside it,
+   so a 16:9 shot gets every pixel the screen can spare and nothing is cropped.
+   (max-width/max-height on a flex item is a separate, buggier code path in Safari.) */
 .item img {
-  max-width: 100%;
-  max-height: 100%;
+  display: block;
+  width: 100%;
+  height: 100%;
   object-fit: contain;
   border-radius: 10px;
-  background: var(--bg-2);
+  background: transparent;
   cursor: zoom-in;
   opacity: 0;
   transition: opacity .35s ease;
   touch-action: manipulation;
+  -webkit-user-drag: none;
+  -webkit-touch-callout: none;
 }
 .item img.loaded { opacity: 1; }
 
@@ -212,6 +236,9 @@ a { color: inherit; text-decoration: none; }
   pointer-events: none;
 }
 .item:hover .meta, .item.show-meta .meta { opacity: 1; }
+/* on a phone the caption sits on top of the photo, so it fades out a few seconds
+   after a photo becomes current (app.js) and returns on the next one */
+.item.dim .meta { opacity: 0; }
 .item .meta b { color: var(--text); font-weight: 550; }
 .item .meta .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -304,6 +331,10 @@ a { color: inherit; text-decoration: none; }
 .zoom {
   position: fixed;
   inset: 0;
+  /* a fixed element is sized against the *large* viewport on iOS Safari, which puts
+     the bottom of the overlay (and its Close button) below the fold — pin the height
+     to the measured visible viewport instead */
+  height: var(--app-h);
   background: #000;
   z-index: 60;
   display: flex;
@@ -315,11 +346,15 @@ a { color: inherit; text-decoration: none; }
   touch-action: pan-x pan-y;
 }
 .zoom img {
-  max-width: 100%;
-  max-height: 100%;
+  display: block;
+  width: 100%;
+  height: 100%;
   object-fit: contain;
+  background: transparent;
   cursor: zoom-in;
   touch-action: manipulation;
+  -webkit-user-drag: none;
+  -webkit-touch-callout: none;
 }
 /* full-size view: block + auto margins keeps every edge of a huge photo
    reachable (flex centring clips the top/left once the image overflows) */
@@ -327,6 +362,8 @@ a { color: inherit; text-decoration: none; }
 .zoom.actual img {
   display: block;
   margin: auto;
+  width: auto;
+  height: auto;
   max-width: none;
   max-height: none;
   cursor: zoom-out;
@@ -469,15 +506,28 @@ input:focus { outline: 2px solid rgba(108, 92, 231, .55); outline-offset: 0; bor
 /* ---------- touch devices ---------- */
 
 @media (hover: none), (pointer: coarse) {
-  /* no hover, so the caption stays visible */
+  /* 48px rather than 56: on a phone every pixel of bar height is a pixel the photo
+     doesn't get */
+  :root { --topbar: 48px; }
+
+  /* full bleed, so a 16:9 photo is as wide as the phone allows. The only inset left
+     is the landscape notch, which would otherwise sit on top of the picture. */
+  .item { padding: 0 var(--safe-right, 0px) 0 var(--safe-left, 0px); }
+  .item img { border-radius: 0; }
+
+  /* no hover, so the caption stays visible — but it now fades out after a few
+     seconds so it doesn't sit on the photo forever (see .item.dim) */
   .item .meta { opacity: .85; font-size: 12.5px; }
   .item:hover .meta { opacity: .85; }
+
+  /* controls stay inside the 48px bar */
+  .topbar .icon-btn, .topbar .btn.small { min-height: 40px; padding: 8px 12px; font-size: 13.5px; }
 
   /* comfortable tap targets */
   .chip { padding: 9px 15px; font-size: 13.5px; }
   .btn { padding: 12px 18px; }
   .btn.small { padding: 10px 15px; font-size: 14px; min-height: var(--tap); }
-  .icon-btn { padding: 9px 14px; font-size: 14px; min-height: 38px; }
+  .icon-btn { padding: 9px 14px; font-size: 14px; min-height: 40px; }
   .zoom-close { padding: 12px 18px; min-height: var(--tap); font-size: 15px; }
   .album-list .btn { min-height: var(--tap); }
   .album-list li { flex-wrap: wrap; }
@@ -493,11 +543,18 @@ input:focus { outline: 2px solid rgba(108, 92, 231, .55); outline-offset: 0; bor
   .btn, .icon-btn, .chip, .dropzone, .album-card, .zoom-close { -webkit-tap-highlight-color: transparent; }
 }
 
+/* three buttons plus the chips get tight on a small phone; the chips scroll, the
+   buttons shrink a little rather than wrapping */
+@media (max-width: 420px) {
+  .topbar .icon-btn, .topbar .btn.small { padding: 8px 10px; font-size: 13px; }
+  .topbar { gap: 8px; }
+}
+
 /* ---------- landscape phones: keep the photo and the bar compact ---------- */
 
 @media (max-height: 480px) and (orientation: landscape) {
-  :root { --topbar: 48px; }
-  .item { padding: 6px; }
+  :root { --topbar: 44px; }
+  .item { padding: 0 var(--safe-right, 0px) 0 var(--safe-left, 0px); }
   .item .meta { bottom: calc(8px + var(--safe-bottom, 0px)); }
   .zoom-hint { display: none; }
 }
@@ -535,10 +592,44 @@ input:focus { outline: 2px solid rgba(108, 92, 231, .55); outline-offset: 0; bor
   to { transform: none; opacity: 1; }
 }
 
+/* ---------- blur thumbnails ---------- */
+
+/* An opt-in privacy screen. One class on <html> blurs every thumbnail; tapping a
+   photo in the feed reveals that one (app.js). A blurred photo can never reach the
+   zoom overlay, so nothing is revealed by accident.
+   The slight scale hides the soft edge a blur leaves inside its own box. */
+.blur-thumbs .item img,
+.blur-thumbs .album-card .thumb {
+  filter: blur(18px);
+  transform: scale(1.06);
+}
+
+.blur-thumbs .item img {
+  transition: opacity .35s ease, filter .25s ease, transform .25s ease;
+}
+.blur-thumbs .item.revealed img { filter: none; transform: none; }
+
+/* the way out, on the photo itself */
+.blur-thumbs .item:not(.revealed)::after {
+  content: "Tap to reveal";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  padding: 7px 14px;
+  border-radius: 999px;
+  background: rgba(10, 10, 14, .72);
+  border: 1px solid rgba(255, 255, 255, .12);
+  color: var(--text);
+  font-size: 12.5px;
+  pointer-events: none;
+  z-index: 2;
+}
+
 /* ---------- users who ask for less motion ---------- */
 
 @media (prefers-reduced-motion: reduce) {
-  .item img, .album-card, .btn, .bar > i, .item .meta { transition: none; }
+  .item img, .album-card, .btn, .bar > i, .item .meta, .blur-thumbs .item img { transition: none; }
   .feed { scroll-behavior: auto; }
   .a2hs { animation: none; }
 }
