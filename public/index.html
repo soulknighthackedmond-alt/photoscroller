@@ -15,6 +15,15 @@
 <!-- what iOS puts on the home screen; Safari ignores an SVG here, so this must be a PNG -->
 <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
 <link rel="manifest" href="/manifest.webmanifest">
+<!-- Fill is the default, and the class goes on before the first paint so a landscape
+     photo never flashes up as a strip while the viewer's own script is still loading. -->
+<script>
+  try {
+    if (localStorage.getItem('ps-mode') !== 'fit') document.documentElement.classList.add('fill-mode');
+  } catch (err) {
+    document.documentElement.classList.add('fill-mode');
+  }
+</script>
 <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -66,7 +75,12 @@
 
 <div id="zoom" class="zoom hidden">
   <img id="zoomImg" alt="">
-  <button class="zoom-close" id="zoomClose" aria-label="Close">Close</button>
+  <div class="zoom-ui">
+    <button class="zoom-btn" id="zoomOut" type="button" aria-label="Zoom out">−</button>
+    <button class="zoom-btn zoom-scale" id="zoomScale" type="button" title="Back to the whole photo">100%</button>
+    <button class="zoom-btn" id="zoomIn" type="button" aria-label="Zoom in">+</button>
+    <button class="zoom-btn zoom-close" id="zoomClose" type="button">Close</button>
+  </div>
   <p class="zoom-hint" id="zoomHint"></p>
 </div>
 
@@ -79,6 +93,7 @@
   <button class="icon-btn" id="a2hsClose" type="button">Not now</button>
 </div>
 
+<script src="/zoommath.js"></script>
 <script src="/app.js"></script>
 <script src="/pwa.js"></script>
 </body>

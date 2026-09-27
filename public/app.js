@@ -334,6 +334,9 @@ function scrollToIndex(i, smooth = true) {
 document.addEventListener('keydown', (e) => {
   if (!zoomEl.classList.contains('hidden')) {
     if (e.key === 'Escape') closeZoom();
+    else if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomAt(centre(), 1.25); }
+    else if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomAt(centre(), 1 / 1.25); }
+    else if (e.key === '0') { e.preventDefault(); resetZoom(); }
     return;
   }
   const r = route();
@@ -400,7 +403,9 @@ $('#blurBtn').addEventListener('click', () => setBlur(!blurOn()));
    How much of the screen a photo takes. 'fit' shows all of it, as large as the screen
    allows — on a portrait phone a 16:9 shot is only ever as wide as the screen, so about
    a third of its height. 'fill' covers the screen and crops the edges, which is the only
-   way a landscape photo gets bigger on a portrait screen. Remembered across visits. */
+   way a landscape photo gets bigger on a portrait screen. Fill is the default — a 16:9
+   photo shown whole on a portrait phone is a strip a quarter of the screen tall, which
+   is not worth opening the app for — and the choice is remembered across visits. */
 
 const MODE_KEY = 'ps-mode';
 
@@ -428,85 +433,275 @@ function setMode(mode, save = true) {
 
 $('#modeBtn').addEventListener('click', () => setMode(fillOn() ? 'fit' : 'fill'));
 
-/* ---------------- zoom ---------------- */
+/* ---------------- zoom ----------------
 
-/* One tap fits the photo to the screen, the next fills the screen, the next shows it at
-   100%; the backdrop, the Close button, Esc or a swipe down dismisses it. No tap timers,
-   so a tap never has to wait to find out whether a second one is coming. */
+   Accurate zooming. Pinch, drag, wheel, double-tap, the +/- buttons and the keyboard
+   all move the same two numbers — a scale and a translate — through the pure functions
+   in zoommath.js, so what is on screen is exactly what the arithmetic says.
+
+   The photo is laid out at its "fit" size in pixels rather than with object-fit, so the
+   <img> box IS the picture and a zoom can be anchored on any point of it. With
+   object-fit the element box stays the size of the overlay while the picture floats
+   inside it, so every anchor would land in the empty letterbox instead of on the photo.
+   transform-origin is the element's centre, which is the overlay's centre, which is the
+   C that zoommath.js works in. */
+
+const ZM = window.ZoomMath;
+const MIN_SCALE = 1;      /* fit — the whole photo; the viewer never goes below it */
+const MAX_SCALE = 8;
+const DBL_TAP_SCALE = 2.5;
+const SWIPE_CLOSE_PX = 70;
+const TAP_MS = 320;       /* two taps closer together than this are one double tap */
+const TAP_SLOP_PX = 12;   /* and a "tap" that travelled further than this was a drag */
+
+/* the whole view state: one scale and one translate */
+const view = { W: 0, H: 0, VW: 0, VH: 0, s: 1, t: { x: 0, y: 0 } };
+
+const pointers = new Map();   /* live pointers, in overlay coordinates */
+let pan = null;               /* the single-pointer drag in progress */
+let pinch = null;             /* the two-pointer pinch in progress */
+let lastTap = 0;
+let lastTapAt = { x: 0, y: 0 };
+
+const centre = () => ({ x: view.VW / 2, y: view.VH / 2 });
+const zoomOpen = () => !zoomEl.classList.contains('hidden');
+const listOf = () => Array.from(pointers.values());
+const midOf = (l) => ({ x: (l[0].x + l[1].x) / 2, y: (l[0].y + l[1].y) / 2 });
+const distOf = (l) => Math.hypot(l[0].x - l[1].x, l[0].y - l[1].y);
+const localPoint = (e) => {
+  const r = zoomEl.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+};
+
+/* Lay the photo out at exactly its fit size, so the element box and the picture are
+   the same rectangle. Runs when the photo decodes and whenever the overlay resizes. */
+function layoutZoom() {
+  view.VW = zoomEl.clientWidth || window.innerWidth || 0;
+  view.VH = zoomEl.clientHeight || window.innerHeight || 0;
+  const fit = ZM.fitSize(zoomImg.naturalWidth, zoomImg.naturalHeight, view.VW, view.VH);
+  if (!fit.w || !fit.h) return false;
+  view.W = fit.w;
+  view.H = fit.h;
+  zoomImg.style.width = fit.w + 'px';
+  zoomImg.style.height = fit.h + 'px';
+  return true;
+}
+
+function applyZoom() {
+  zoomImg.style.transform =
+    'translate(' + view.t.x + 'px, ' + view.t.y + 'px) scale(' + view.s + ')';
+  const badge = $('#zoomScale');
+  if (!badge) return;
+  badge.textContent = Math.round(view.s * 100) + '%';
+  /* the honest second number: how much of the photo's own pixels you are seeing */
+  const natural = zoomImg.naturalWidth;
+  badge.title = natural
+    ? Math.round(((view.s * view.W) / natural) * 100) + '% of the photo\u2019s own pixels'
+    : 'Tap to fit the whole photo';
+}
+
+/* The only place the scale changes: the point under the anchor stays under it. */
+function setScale(s1, anchor) {
+  const s = ZM.clampScale(s1, MIN_SCALE, MAX_SCALE);
+  if (s === view.s) return;
+  const t = ZM.zoomAbout(anchor, centre(), view.t, view.s, s);
+  view.t = ZM.clampTranslate(t, s, view.W, view.H, view.VW, view.VH);
+  view.s = s;
+  applyZoom();
+}
+
+function resetZoom() {
+  view.s = MIN_SCALE;
+  view.t = { x: 0, y: 0 };
+  applyZoom();
+}
+
+function zoomAt(anchor, factor) {
+  setScale(view.s * factor, anchor);
+}
+
+/* Re-measure and re-clamp: after a rotation, a window resize, or the photo decoding. */
+function refitZoom() {
+  if (!zoomOpen()) return;
+  if (!layoutZoom()) return;
+  view.t = ZM.clampTranslate(view.t, view.s, view.W, view.H, view.VW, view.VH);
+  applyZoom();
+}
+
 function openZoom(photo) {
-  zoomImg.src = photo.url;
-  zoomImg.alt = photo.name;
-  setZoomScale('fit');
+  /* un-hide before measuring: a display:none overlay has no client size */
   zoomEl.classList.remove('hidden');
+  zoomImg.style.transform = '';
+  zoomImg.style.width = '';
+  zoomImg.style.height = '';
+  view.s = MIN_SCALE;
+  view.t = { x: 0, y: 0 };
+  zoomImg.alt = photo.name;
+  zoomImg.src = photo.url;
   $('#zoomHint').textContent = isTouch
-    ? 'Tap to fill the screen, tap again for full size · swipe down to close'
-    : 'Click to fill the screen, click again for full size · Esc to close';
+    ? 'Pinch or double-tap to zoom · drag to pan · swipe down to close'
+    : 'Scroll or double-click to zoom · drag to pan · Esc to close';
+  /* a cached photo is already decoded, so measure now; a new one fires load */
+  if (zoomImg.complete && zoomImg.naturalWidth) refitZoom();
 }
 
 function closeZoom() {
   zoomEl.classList.add('hidden');
-  zoomEl.classList.remove('actual');
-  zoomEl.classList.remove('screen');
-  zoomImg.classList.remove('actual');
+  zoomImg.style.transform = '';
+  zoomImg.style.width = '';
+  zoomImg.style.height = '';
   zoomImg.removeAttribute('src');
+  pointers.clear();
+  pan = null;
+  pinch = null;
+  lastTap = 0;
 }
 
-/* fit → screen → actual. The middle step exists because on a phone 'fit' and the feed
-   are the same size for a landscape photo, so the first tap used to look like nothing
-   had happened. 'screen' covers the screen (cropped), 'actual' is 100% pixels. */
-const ZOOM_STEPS = ['fit', 'screen', 'actual'];
+zoomImg.addEventListener('load', refitZoom);
 
-function setZoomScale(mode) {
-  const actual = mode === 'actual';
-  zoomEl.classList.toggle('actual', actual);
-  zoomImg.classList.toggle('actual', actual);
-  zoomEl.classList.toggle('screen', mode === 'screen');
-  if (actual) {
-    requestAnimationFrame(() => {
-      zoomEl.scrollLeft = Math.max(0, (zoomImg.offsetWidth - zoomEl.clientWidth) / 2);
-      zoomEl.scrollTop = Math.max(0, (zoomImg.offsetHeight - zoomEl.clientHeight) / 2);
-    });
-  } else {
-    zoomEl.scrollTop = 0;
-    zoomEl.scrollLeft = 0;
+/* ---------------- zoom gestures ----------------
+
+   Pointer events cover touch, pen and mouse in one path, so there is no separate
+   touch handler to fall out of step with the mouse one. Two fingers pinch about their
+   midpoint; one finger (or the mouse) drags; a wheel zooms about the cursor; two quick
+   taps zoom about the tap. touch-action: none on the overlay means the browser hands
+   the whole gesture over instead of scrolling or page-zooming behind it. */
+
+zoomEl.addEventListener('pointerdown', (e) => {
+  if (e.target.closest && e.target.closest('.zoom-ui')) return;   /* buttons are their own */
+  pointers.set(e.pointerId, localPoint(e));
+  if (zoomEl.setPointerCapture) {
+    try {
+      zoomEl.setPointerCapture(e.pointerId);
+    } catch {
+      /* a pointer that already went away is not worth an error */
+    }
   }
+  const l = listOf();
+  if (l.length >= 2) {
+    pinch = { d: distOf(l), mid: midOf(l), t0: { x: view.t.x, y: view.t.y }, s0: view.s };
+    pan = null;
+  } else {
+    pinch = null;
+    pan = {
+      id: e.pointerId,
+      start: l[0],
+      last: l[0],
+      t0: { x: view.t.x, y: view.t.y },
+      moved: 0,
+      at: Date.now(),
+    };
+  }
+});
+
+zoomEl.addEventListener('pointermove', (e) => {
+  if (!pointers.has(e.pointerId)) return;
+  pointers.set(e.pointerId, localPoint(e));
+  const l = listOf();
+
+  if (pinch && l.length >= 2) {
+    const s = ZM.clampScale(pinch.s0 * (distOf(l) / pinch.d), MIN_SCALE, MAX_SCALE);
+    const t = ZM.pinchAbout(pinch.mid, midOf(l), centre(), pinch.t0, pinch.s0, s);
+    view.s = s;
+    view.t = ZM.clampTranslate(t, s, view.W, view.H, view.VW, view.VH);
+    applyZoom();
+    return;
+  }
+
+  if (pan && e.pointerId === pan.id) {
+    const p = l[0];
+    pan.last = p;
+    const dx = p.x - pan.start.x;
+    const dy = p.y - pan.start.y;
+    pan.moved = Math.max(pan.moved, Math.hypot(dx, dy));
+    if (view.s <= MIN_SCALE + 1e-6) {
+      /* at fit size there is nothing to pan, so a downward drag is the swipe-to-close
+         gesture — and it moves, so the gesture has feedback */
+      view.s = MIN_SCALE;
+      view.t = { x: 0, y: dy > 0 ? dy : 0 };
+      applyZoom();
+      return;
+    }
+    view.t = ZM.clampTranslate(
+      { x: pan.t0.x + dx, y: pan.t0.y + dy },
+      view.s, view.W, view.H, view.VW, view.VH
+    );
+    applyZoom();
+  }
+});
+
+function endPointer(e) {
+  if (!pointers.delete(e.pointerId)) return;
+  const l = listOf();
+  if (l.length < 2) pinch = null;
+  if (l.length === 1) {
+    /* a finger left after a pinch: keep dragging from where it is, and never treat
+       what is left of that gesture as a tap */
+    pan = {
+      id: Array.from(pointers.keys())[0],
+      start: l[0],
+      last: l[0],
+      t0: { x: view.t.x, y: view.t.y },
+      moved: TAP_SLOP_PX + 1,
+      at: Date.now(),
+    };
+    return;
+  }
+  if (l.length || !pan) return;
+
+  const p = pan.last;
+  const dy = p.y - pan.start.y;
+  const quick = Date.now() - pan.at < TAP_MS;
+  const still = pan.moved <= TAP_SLOP_PX;
+  pan = null;
+
+  if (view.s <= MIN_SCALE + 1e-6 && dy > SWIPE_CLOSE_PX) {
+    closeZoom();
+    return;
+  }
+  if (still && quick) {
+    handleTap(p);
+    return;
+  }
+  /* a short drag at fit size springs back to the centre */
+  if (view.s <= MIN_SCALE + 1e-6 && view.t.y !== 0) resetZoom();
 }
 
-zoomImg.addEventListener('click', () => {
-  const step = zoomEl.classList.contains('actual')
-    ? 'actual'
-    : zoomEl.classList.contains('screen')
-      ? 'screen'
-      : 'fit';
-  setZoomScale(ZOOM_STEPS[(ZOOM_STEPS.indexOf(step) + 1) % ZOOM_STEPS.length]);
-});
+zoomEl.addEventListener('pointerup', endPointer);
+zoomEl.addEventListener('pointercancel', endPointer);
+
+/* double-tap: in to 2.5x about the tap, and back out again if already zoomed */
+function handleTap(p) {
+  const now = Date.now();
+  if (now - lastTap < TAP_MS && Math.hypot(p.x - lastTapAt.x, p.y - lastTapAt.y) <= TAP_SLOP_PX * 2) {
+    lastTap = 0;
+    if (view.s > MIN_SCALE + 0.01) resetZoom();
+    else setScale(DBL_TAP_SCALE, p);
+    return;
+  }
+  lastTap = now;
+  lastTapAt = p;
+}
+
+/* a trackpad pinch arrives as ctrl+wheel; deltaMode 1 is lines, 2 is pages */
+zoomEl.addEventListener(
+  'wheel',
+  (e) => {
+    if (!zoomOpen()) return;
+    e.preventDefault();
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? view.VH : 1;
+    zoomAt(localPoint(e), Math.exp(-e.deltaY * unit * (e.ctrlKey ? 0.01 : 0.0015)));
+  },
+  { passive: false }
+);
+
+$('#zoomIn').addEventListener('click', () => zoomAt(centre(), 1.5));
+$('#zoomOut').addEventListener('click', () => zoomAt(centre(), 1 / 1.5));
+$('#zoomScale').addEventListener('click', resetZoom);
+$('#zoomClose').addEventListener('click', closeZoom);
 zoomEl.addEventListener('click', (e) => {
   if (e.target === zoomEl) closeZoom();
 });
-$('#zoomClose').addEventListener('click', closeZoom);
-
-/* swipe down to dismiss — only while the photo fits; at full size the overlay is
-   a scroll surface, so a drag has to pan it instead */
-let zoomTouchY = null;
-zoomEl.addEventListener(
-  'touchstart',
-  (e) => {
-    zoomTouchY = zoomEl.classList.contains('actual') ? null : e.touches[0].clientY;
-  },
-  { passive: true }
-);
-zoomEl.addEventListener(
-  'touchmove',
-  (e) => {
-    if (zoomTouchY === null) return;
-    if (e.touches[0].clientY - zoomTouchY > 70) {
-      zoomTouchY = null;
-      closeZoom();
-    }
-  },
-  { passive: true }
-);
-zoomEl.addEventListener('touchend', () => { zoomTouchY = null; }, { passive: true });
 
 /* ---------------- screen height / rotation ---------------- */
 
@@ -536,7 +731,11 @@ function resnap() {
 }
 function scheduleResnap(delay) {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(resnap, delay);
+  resizeTimer = setTimeout(() => {
+    /* the overlay is sized in pixels too, so it has to be re-measured as well */
+    refitZoom();
+    resnap();
+  }, delay);
 }
 window.addEventListener('resize', () => scheduleResnap(180));
 window.addEventListener('orientationchange', () => scheduleResnap(320));
@@ -595,9 +794,11 @@ window.addEventListener('hashchange', render);
     /* private mode: the default is unblurred */
   }
   try {
-    setMode(localStorage.getItem(MODE_KEY) === 'fill' ? 'fill' : 'fit', false);
+    /* fill is the default: on a portrait phone a 16:9 photo shown whole is only as wide
+       as the screen, so "fit" is the strip you have to squint at */
+    setMode(localStorage.getItem(MODE_KEY) === 'fit' ? 'fit' : 'fill', false);
   } catch {
-    /* private mode: the default is "fit" — the whole photo */
+    /* private mode: the default is "fill" */
   }
   try {
     state.order = localStorage.getItem(SHUFFLE_KEY) === '1' ? 'shuffle' : 'upload';

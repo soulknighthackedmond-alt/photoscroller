@@ -366,60 +366,79 @@ html.fill-mode .item > img { object-fit: cover; }
   position: fixed;
   inset: 0;
   /* a fixed element is sized against the *large* viewport on iOS Safari, which puts
-     the bottom of the overlay (and its Close button) below the fold — pin the height
-     to the measured visible viewport instead */
+     the bottom of the overlay (and its controls) below the fold — pin the height to
+     the measured visible viewport instead */
   height: var(--app-h);
   background: #000;
   z-index: 60;
   display: flex;
   align-items: center;
   justify-content: center;
-  overflow: auto;
-  -webkit-overflow-scrolling: touch;
+  /* every gesture inside the overlay belongs to the viewer: the browser must not
+     scroll the page or page-zoom behind a pinch, or the fingers fight the photo */
+  overflow: hidden;
+  touch-action: none;
   overscroll-behavior: contain;
-  touch-action: pan-x pan-y;
+  -webkit-user-select: none;
+  user-select: none;
 }
+
+/* app.js lays the photo out at exactly its fit size in pixels, so this element box IS
+   the picture — which is what lets a zoom be anchored on any point of the photo, and
+   why there is no object-fit here: a letterboxed element box would put every anchor in
+   the empty space beside the picture instead of on it. The scale and translate arrive
+   as one transform, so the browser composites rather than re-laying-out per frame. */
 .zoom img {
   display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  background: transparent;
-  cursor: zoom-in;
-  touch-action: manipulation;
-  -webkit-user-drag: none;
-  -webkit-touch-callout: none;
-}
-/* middle step of the tap cycle: the photo covers the screen. On a portrait phone this
-   is the step that actually makes a landscape shot bigger — the whole photo first, then
-   filling the screen, then 100% pixels. */
-.zoom.screen img { object-fit: cover; }
-
-/* full-size view: block + auto margins keeps every edge of a huge photo
-   reachable (flex centring clips the top/left once the image overflows) */
-.zoom.actual { display: block; }
-.zoom.actual img {
-  display: block;
-  margin: auto;
-  width: auto;
-  height: auto;
   max-width: none;
   max-height: none;
-  cursor: zoom-out;
+  transform-origin: 50% 50%;
+  will-change: transform;
+  background: #000;
+  cursor: zoom-in;
+  touch-action: none;
+  -webkit-user-drag: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
-.zoom-close {
-  position: fixed;
-  top: calc(14px + var(--safe-top, 0px));
-  right: calc(14px + var(--safe-right, 0px));
-  padding: 8px 14px;
+
+/* the controls sit in one row so the read-out is next to the buttons that change it.
+   Absolute, not fixed: the overlay is pinned to the measured visible height, so its
+   children inherit that instead of iOS's larger fixed-viewport box. */
+.zoom-ui {
+  position: absolute;
+  top: calc(12px + var(--safe-top, 0px));
+  right: calc(12px + var(--safe-right, 0px));
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 2;
+}
+.zoom-ui .zoom-btn {
+  min-width: 46px;
+  min-height: 42px;
+  padding: 8px 12px;
   border-radius: 10px;
   border: 1px solid var(--line);
   background: rgba(20, 20, 27, .9);
   color: var(--text);
   font: inherit;
+  font-size: 15px;
+  line-height: 1;
   cursor: pointer;
   touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
+.zoom-ui .zoom-btn:active { transform: scale(.96); }
+/* the read-out doubles as "back to the whole photo" */
+.zoom-scale { min-width: 64px; font-variant-numeric: tabular-nums; color: var(--muted); }
+
+/* same reasoning as .zoom-ui: inside the measured box, not the viewport */
+.zoom > .zoom-hint { position: absolute; }
+
 .zoom-hint {
   position: fixed;
   left: 50%;
