@@ -188,3 +188,29 @@ docker-compose.yml   Local run
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Reaching the app from your network
+
+Coolify puts every app behind its own Traefik proxy and routes by **hostname**, not by published host ports. Two consequences are worth knowing before blaming the container:
+
+- `<server-ip>:3000` refuses even while the app is running healthy, because nothing is published on the host by default.
+- The auto-generated domain (`<random>.<ip>.sslip.io`) embeds the **server IP stored in Coolify** (Servers -> your server -> IP address). If that address is not your current WAN IP, the domain points somewhere else entirely and the request never reaches your network. Residential WAN IPs change, so a `sslip.io` name baked from one is a name that expires.
+
+### On your own network (simplest)
+
+Resource -> **Advanced -> Ports Mappings** -> add `3000:3000`, redeploy, then open `http://<server-lan-ip>:3000`. This bypasses Traefik and needs no DNS.
+
+### From the internet
+
+1. Point a name you control at your WAN IP. DuckDNS works well here, and it needs an updater because the IP changes.
+2. Put that name in the resource's **Domains** field instead of the generated `sslip.io` one.
+3. Forward WAN `80` -> `<server-lan-ip>:80` (and `443` for https) on your router. Some ISPs block inbound 80/443 on residential lines, so if the app still does not answer after forwarding, that is the likely reason.
+4. Turn on NAT loopback on the router if you also want the public name to work from inside the house.
+
+### https without opening any ports
+
+Put a Cloudflare Tunnel in front (Coolify ships it as a service template). You get an https hostname with no forwarded ports, and the tunnel hands plain HTTP to Traefik.
+
+### The home-screen app over plain http
+
+Icons, `apple-touch-icon` and the standalone meta tags all work over plain http, so Share -> Add to Home Screen still gives you a full-screen app on iOS. The **service worker does not** - it needs a secure context, so over `http://<lan-ip>:3000` there is no offline caching and Chrome will not offer its install dialog. Serve it over https (tunnel or domain) for the complete PWA.
