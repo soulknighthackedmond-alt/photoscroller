@@ -34,6 +34,10 @@ const IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.avif', '.
 
 const isImage = (name) => IMAGE_EXT.has(path.extname(name).toLowerCase());
 
+/* the home-screen icons are drawn and PNG-encoded in-process (lib/icons.js) rather
+   than committed as binaries, so there is one reviewable source for every size */
+const ICONS = require('./lib/icons');
+
 /* ------------------------------------------------------------------ *
  * storage helpers
  * ------------------------------------------------------------------ */
@@ -426,6 +430,27 @@ app.delete('/api/albums/:slug/photos/:file', requireAuth, async (req, res, next)
   }
 });
 
+/* --- icons (generated, not committed) -------------------------------- */
+
+function sendIcon(res, name) {
+  const buf = ICONS.get(name);
+  if (!buf) return false;
+  /* deterministic bytes, so a day of caching is safe and free */
+  res.setHeader('Content-Type', 'image/png');
+  res.setHeader('Content-Length', String(buf.length));
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.end(buf);
+  return true;
+}
+
+app.get('/icons/:name', (req, res) => {
+  if (!sendIcon(res, req.params.name)) res.status(404).json({ error: 'no such icon' });
+});
+
+/* iOS looks for these two paths at the root when it builds a home-screen icon */
+app.get('/apple-touch-icon.png', (_req, res) => sendIcon(res, 'apple-touch-icon.png'));
+app.get('/apple-touch-icon-precomposed.png', (_req, res) => sendIcon(res, 'apple-touch-icon.png'));
+
 /* --- static + pages -------------------------------------------------- */
 
 app.use(
@@ -436,6 +461,9 @@ app.use(
        a wrong content type makes browsers ignore the manifest and refuse to install */
     setHeaders: (res, filePath) => {
       if (filePath.endsWith('.webmanifest')) res.setHeader('Content-Type', 'application/manifest+json');
+      /* the shell and the service worker must never be served stale, or a redeploy can
+         leave a phone running last week's JS — and a cached sw.js can't update itself */
+      if (/\.(?:html|js|css|webmanifest)$/.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
     },
   })
 );
