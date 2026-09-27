@@ -204,6 +204,9 @@ a { color: inherit; text-decoration: none; }
   width: 100%;
   height: 100%;
   object-fit: contain;
+  /* paints above the letterbox backdrop (see .item::before) */
+  position: relative;
+  z-index: 1;
   border-radius: 10px;
   background: transparent;
   cursor: zoom-in;
@@ -214,6 +217,35 @@ a { color: inherit; text-decoration: none; }
   -webkit-touch-callout: none;
 }
 .item img.loaded { opacity: 1; }
+
+/* The letterbox around a photo is filled with that photo's own colours, blurred and
+   darkened, instead of flat black.
+   On a portrait phone a 16:9 shot can only ever be as wide as the screen — about a
+   third of its height — and the rest of the screen was empty, which is what made the
+   photo read as small. This uses the whole screen without cropping anything and
+   without a second request: it is the same URL, decoded once.
+   Sized to overhang the item so the blur's soft edge falls outside the visible area
+   (.item clips it). */
+.item::before {
+  content: "";
+  position: absolute;
+  inset: -12%;
+  background-image: var(--bg, none);
+  background-position: center;
+  background-size: cover;
+  filter: blur(24px) saturate(1.15) brightness(.5);
+  z-index: 0;
+  opacity: 0;
+  transition: opacity .4s ease;
+  pointer-events: none;
+}
+/* set by app.js once the photo's URL is known, so nothing is fetched early */
+.item.ready::before { opacity: 1; }
+
+/* Fill: the photo covers the screen instead of fitting inside it. This is the only way
+   a landscape photo gets bigger on a portrait screen, and it costs the edges.
+   Written as `>` so it never collides with the base .item img rule above. */
+html.fill-mode .item > img { object-fit: cover; }
 
 .item .meta {
   position: absolute;
@@ -234,6 +266,8 @@ a { color: inherit; text-decoration: none; }
   transition: opacity .2s;
   max-width: calc(100% - 32px - var(--safe-left, 0px) - var(--safe-right, 0px));
   pointer-events: none;
+  /* above the photo, which sits at z-index 1 */
+  z-index: 2;
 }
 .item:hover .meta, .item.show-meta .meta { opacity: 1; }
 /* on a phone the caption sits on top of the photo, so it fades out a few seconds
@@ -356,6 +390,11 @@ a { color: inherit; text-decoration: none; }
   -webkit-user-drag: none;
   -webkit-touch-callout: none;
 }
+/* middle step of the tap cycle: the photo covers the screen. On a portrait phone this
+   is the step that actually makes a landscape shot bigger — the whole photo first, then
+   filling the screen, then 100% pixels. */
+.zoom.screen img { object-fit: cover; }
+
 /* full-size view: block + auto margins keeps every edge of a huge photo
    reachable (flex centring clips the top/left once the image overflows) */
 .zoom.actual { display: block; }
@@ -608,6 +647,9 @@ input:focus { outline: 2px solid rgba(108, 92, 231, .55); outline-offset: 0; bor
   transition: opacity .35s ease, filter .25s ease, transform .25s ease;
 }
 .blur-thumbs .item.revealed img { filter: none; transform: none; }
+
+/* a privacy screen shouldn't leave a large blurred echo of the photo behind it */
+.blur-thumbs .item:not(.revealed)::before { opacity: 0; }
 
 /* the way out, on the photo itself */
 .blur-thumbs .item:not(.revealed)::after {
