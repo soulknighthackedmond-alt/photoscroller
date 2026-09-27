@@ -1,6 +1,20 @@
 'use strict';
 
-/* Photoscroller viewer: endless vertical feed + album list. */
+/* Photoscroller viewer: endless vertical feed + album list.
+
+   Mobile: the feed is driven by the browser's own scroll-snap — a swipe IS a
+   scroll — so there are no custom swipe handlers to fight the browser. What a
+   phone does need, and what this file adds: a touch-aware HUD hint, a caption
+   that stays visible without hover (CSS), tap-to-zoom with swipe-down-to-close,
+   and a re-snap to the same photo after rotating or resizing the screen. */
+
+const isTouch =
+  (typeof window.matchMedia === 'function' &&
+    window.matchMedia('(hover: none), (pointer: coarse)').matches) ||
+  (navigator.maxTouchPoints || 0) > 0;
+
+document.documentElement.classList.toggle('is-touch', isTouch);
+document.documentElement.classList.toggle('is-hover', !isTouch);
 
 const state = {
   albums: [],
@@ -18,7 +32,8 @@ const $ = (sel) => document.querySelector(sel);
 const feedEl = $('#feed');
 const chipsEl = $('#chips');
 const hudEl = $('#hud');
-const footerEl = $('#feedFooter');
+const zoomEl = $('#zoom');
+const zoomImg = $('#zoomImg');
 
 /* Every value interpolated into innerHTML below goes through esc() first — album names come
    from the upload form, and photo names/urls are already restricted server-side to
@@ -104,6 +119,7 @@ async function renderAlbums() {
 async function startFeed(album) {
   if (state.album === album && feedEl.children.length) {
     feedEl.scrollTop = 0;
+    updateHud();
     return;
   }
   state.album = album;
@@ -195,12 +211,22 @@ function hydrateImages() {
 
 const albumName = (slug) => (state.albums.find((a) => a.slug === slug) || { name: slug }).name;
 
-/* prefetch the next page before the user reaches the bottom */
-feedEl.addEventListener('scroll', () => {
-  const nearEnd = feedEl.scrollTop + feedEl.clientHeight * 2.2 >= feedEl.scrollHeight;
-  if (nearEnd) loadMore();
-  updateHud();
-});
+/* prefetch the next page before the user reaches the bottom.
+   Throttled to one layout read per frame — a phone fires scroll at 60fps. */
+let scrollQueued = false;
+feedEl.addEventListener(
+  'scroll',
+  () => {
+    if (scrollQueued) return;
+    scrollQueued = true;
+    requestAnimationFrame(() => {
+      scrollQueued = false;
+      if (feedEl.scrollTop + feedEl.clientHeight * 2.2 >= feedEl.scrollHeight) loadMore();
+      updateHud();
+    });
+  },
+  { passive: true }
+);
 
 function updateHud() {
   if (!state.photos.length) {
@@ -208,24 +234,30 @@ function updateHud() {
     return;
   }
   const idx = Math.min(currentIndex() + 1, state.photos.length);
-  hudEl.textContent = `${idx} / ${state.total || state.photos.length} · scroll, or use ↑ ↓`;
+  const total = state.total || state.photos.length;
+  hudEl.textContent = isTouch ? `${idx} / ${total} · swipe up` : `${idx} / ${total} · scroll, or use ↑ ↓`;
   hudEl.classList.remove('hidden');
 }
 
 function currentIndex() {
-  const h = feedEl.clientHeight || 1;
+  const first = feedEl.querySelector('.item');
+  const h = (first && first.offsetHeight) || feedEl.clientHeight || 1;
   return Math.round(feedEl.scrollTop / h);
 }
 
-function scrollToIndex(i) {
+/* Snapping by index rather than scrollIntoView keeps the scroll container the
+   feed itself — on iOS scrollIntoView can walk up and move the page instead. */
+function scrollToIndex(i, smooth = true) {
   const items = feedEl.querySelectorAll('.item');
   if (!items.length) return;
   const target = Math.max(0, Math.min(i, items.length - 1));
-  items[target].scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const top = target * items[0].offsetHeight;
+  if (smooth) feedEl.scrollTo({ top, behavior: 'smooth' });
+  else feedEl.scrollTop = top;
 }
 
 document.addEventListener('keydown', (e) => {
-  if ($('#zoom').classList.contains('hidden') === false) {
+  if (!zoomEl.classList.contains('hidden')) {
     if (e.key === 'Escape') closeZoom();
     return;
   }
@@ -251,29 +283,103 @@ document.addEventListener('keydown', (e) => {
 
 /* ---------------- zoom ---------------- */
 
+/* One tap fits the photo to the screen, another tap shows it at full size; the
+   backdrop, the Close button, Esc or a swipe down dismisses it. No tap timers,
+   so a tap never has to wait to find out whether a second one is coming. */
 function openZoom(photo) {
-  const zoom = $('#zoom');
-  $('#zoomImg').src = photo.url.replace('/i/', '/i/');
-  zoom.classList.remove('hidden');
-  $('#zoomImg').onclick = closeZoom;
+  zoomImg.src = photo.url;
+  zoomImg.alt = photo.name;
+  setZoomScale('fit');
+  zoomEl.classList.remove('hidden');
+  $('#zoomHint').textContent = isTouch
+    ? 'Tap the photo to zoom in · swipe down to close'
+    : 'Click the photo to zoom in · Esc to close';
 }
+
 function closeZoom() {
-  $('#zoom').classList.add('hidden');
-  $('#zoomImg').src = '';
+  zoomEl.classList.add('hidden');
+  zoomEl.classList.remove('actual');
+  zoomImg.classList.remove('actual');
+  zoomImg.removeAttribute('src');
 }
+
+function setZoomScale(mode) {
+  const actual = mode === 'actual';
+  zoomEl.classList.toggle('actual', actual);
+  zoomImg.classList.toggle('actual', actual);
+  if (actual) {
+    requestAnimationFrame(() => {
+      zoomEl.scrollLeft = Math.max(0, (zoomImg.offsetWidth - zoomEl.clientWidth) / 2);
+      zoomEl.scrollTop = Math.max(0, (zoomImg.offsetHeight - zoomEl.clientHeight) / 2);
+    });
+  } else {
+    zoomEl.scrollTop = 0;
+    zoomEl.scrollLeft = 0;
+  }
+}
+
+zoomImg.addEventListener('click', () => {
+  setZoomScale(zoomEl.classList.contains('actual') ? 'fit' : 'actual');
+});
+zoomEl.addEventListener('click', (e) => {
+  if (e.target === zoomEl) closeZoom();
+});
 $('#zoomClose').addEventListener('click', closeZoom);
+
+/* swipe down to dismiss — only while the photo fits; at full size the overlay is
+   a scroll surface, so a drag has to pan it instead */
+let zoomTouchY = null;
+zoomEl.addEventListener(
+  'touchstart',
+  (e) => {
+    zoomTouchY = zoomEl.classList.contains('actual') ? null : e.touches[0].clientY;
+  },
+  { passive: true }
+);
+zoomEl.addEventListener(
+  'touchmove',
+  (e) => {
+    if (zoomTouchY === null) return;
+    if (e.touches[0].clientY - zoomTouchY > 70) {
+      zoomTouchY = null;
+      closeZoom();
+    }
+  },
+  { passive: true }
+);
+zoomEl.addEventListener('touchend', () => { zoomTouchY = null; }, { passive: true });
+
+/* ---------------- rotation / resize ---------------- */
+
+/* A photo is exactly one viewport tall, so rotating the phone (or the mobile URL
+   bar changing height) moves the snap point — put the same photo back. */
+let resizeTimer = null;
+function resnap() {
+  if (route().view !== 'feed') return;
+  scrollToIndex(currentIndex(), false);
+  updateHud();
+}
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(resnap, 180);
+});
+window.addEventListener('orientationchange', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(resnap, 320);
+});
 
 /* ---------------- boot ---------------- */
 
 $('#shuffleBtn').addEventListener('click', () => {
   state.seed = Math.floor(Math.random() * 1e9);
   state.album = null;
+  state.photos = [];
   feedEl.innerHTML = '';
   state.offset = 0;
   state.total = 0;
   state.done = false;
-  const r = route();
-  startFeed(r.album || null);
+  state.loading = false;
+  startFeed(route().album || null);
 });
 
 window.addEventListener('hashchange', render);
