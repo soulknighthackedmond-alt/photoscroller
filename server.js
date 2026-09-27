@@ -123,10 +123,24 @@ async function readMeta(slug) {
   try {
     const raw = await fsp.readFile(path.join(albumPath(slug), META_FILE), 'utf8');
     const meta = JSON.parse(raw);
-    return { name: String(meta.name || slug), createdAt: meta.createdAt || null };
+    return {
+      name: String(meta.name || slug),
+      createdAt: meta.createdAt || null,
+      /* The order the photos arrived in, recorded when each file is saved. The
+         filesystem cannot be trusted for this: one upload batch can share a
+         millisecond, and a copy or restore rewrites mtimes wholesale. */
+      order: Array.isArray(meta.order) ? meta.order.map(String) : [],
+    };
   } catch {
-    return { name: slug, createdAt: null };
+    return { name: slug, createdAt: null, order: [] };
   }
+}
+
+async function writeMeta(slug, meta) {
+  await fsp.writeFile(
+    path.join(albumPath(slug), META_FILE),
+    JSON.stringify({ name: meta.name, createdAt: meta.createdAt, order: meta.order || [] }, null, 2)
+  );
 }
 
 async function listPhotos(slug) {
@@ -154,7 +168,20 @@ async function listPhotos(slug) {
       mtime: stat.mtimeMs,
     });
   }
-  photos.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  /* Uploaded order: whatever the album recorded first, then anything that arrived
+     without one (albums made before the order was kept, or files dropped in by
+     hand) by mtime and finally by name, so the result is always deterministic. */
+  const rank = new Map();
+  (await readMeta(slug)).order.forEach((name, i) => {
+    if (!rank.has(name)) rank.set(name, i);
+  });
+  photos.sort((a, b) => {
+    const ra = rank.has(a.name) ? rank.get(a.name) : Infinity;
+    const rb = rank.has(b.name) ? rank.get(b.name) : Infinity;
+    if (ra !== rb) return ra - rb;
+    if (a.mtime !== b.mtime) return a.mtime - b.mtime;
+    return a.name.localeCompare(b.name, undefined, { numeric: true });
+  });
   return photos;
 }
 
@@ -182,7 +209,15 @@ async function listAlbums() {
       updatedAt: Math.max(...photos.map((p) => p.mtime)),
     });
   }
-  albums.sort((a, b) => b.updatedAt - a.updatedAt);
+  /* Oldest album first, so the combined "Everything" feed runs in the order the
+     photos were uploaded instead of newest-first. */
+  albums.sort((a, b) => {
+    const ca = a.createdAt || '';
+    const cb = b.createdAt || '';
+    if (ca !== cb) return ca < cb ? -1 : 1;
+    if (a.updatedAt !== b.updatedAt) return a.updatedAt - b.updatedAt;
+    return a.slug.localeCompare(b.slug);
+  });
   return albums;
 }
 
@@ -412,7 +447,7 @@ app.get('/api/feed', async (req, res, next) => {
     const album = req.query.album ? slugify(req.query.album) : null;
     const limit = Math.min(Number(req.query.limit || 24), 100);
     const offset = Math.max(Number(req.query.offset || 0), 0);
-    const order = String(req.query.order || 'shuffle');
+    const order = String(req.query.order || 'upload');
     const seed = Number(req.query.seed || 1);
 
     let photos;
@@ -435,9 +470,11 @@ app.get('/api/feed', async (req, res, next) => {
         const j = Math.floor(rand() * (i + 1));
         [photos[i], photos[j]] = [photos[j], photos[i]];
       }
-    } else {
+    } else if (order === 'recent') {
       photos.sort((x, y) => y.mtime - x.mtime);
     }
+    /* 'upload' — and anything unrecognised — keeps the order listPhotos returned,
+       which is the order the photos were uploaded in. */
 
     const page = photos.slice(offset, offset + limit);
     res.json({ photos: page, total: photos.length, offset, limit });
@@ -469,7 +506,7 @@ app.post('/api/albums', requireAuth, async (req, res, next) => {
     await fsp.mkdir(dir, { recursive: true });
     await fsp.writeFile(
       path.join(dir, META_FILE),
-      JSON.stringify({ name: name.slice(0, 80), createdAt: new Date().toISOString() }, null, 2)
+      JSON.stringify({ name: name.slice(0, 80), createdAt: new Date().toISOString(), order: [] }, null, 2)
     );
     res.json({ slug, name: name.slice(0, 80) });
   } catch (err) {
@@ -493,18 +530,10 @@ app.post('/api/albums/:slug/photos', requireAuth, upload.array('photos', MAX_FIL
     const dir = albumPath(slug);
     await fsp.mkdir(dir, { recursive: true });
 
-    let metaExists = true;
-    try {
-      await fsp.access(path.join(dir, META_FILE));
-    } catch {
-      metaExists = false;
-    }
-    if (!metaExists) {
-      const displayName = String((req.body && req.body.name) || req.params.slug);
-      await fsp.writeFile(
-        path.join(dir, META_FILE),
-        JSON.stringify({ name: displayName.slice(0, 80), createdAt: new Date().toISOString() }, null, 2)
-      );
+    const meta = await readMeta(slug);
+    if (!meta.createdAt) {
+      meta.createdAt = new Date().toISOString();
+      meta.name = String((req.body && req.body.name) || req.params.slug).slice(0, 80);
     }
 
     const saved = [];
@@ -513,6 +542,10 @@ app.post('/api/albums/:slug/photos', requireAuth, upload.array('photos', MAX_FIL
       await moveFile(file.path, path.join(dir, target));
       saved.push(target);
     }
+    /* Record the arrival order before answering: the album is read back from this
+       array, so a batch scrolls in the order it was sent rather than by mtime. */
+    for (const name of saved) if (!meta.order.includes(name)) meta.order.push(name);
+    await writeMeta(slug, meta);
     await cleanupStaged(files);
     res.json({ album: slug, saved: saved.length, files: saved, skipped: req.skippedFiles || [] });
   } catch (err) {
@@ -532,7 +565,16 @@ app.delete('/api/albums/:slug', requireAuth, async (req, res, next) => {
 
 app.delete('/api/albums/:slug/photos/:file', requireAuth, async (req, res, next) => {
   try {
-    await fsp.rm(photoPath(req.params.slug, req.params.file), { force: true });
+    const full = photoPath(req.params.slug, req.params.file);
+    await fsp.rm(full, { force: true });
+    /* Drop it from the recorded order too, or a later upload of a file with the
+       same name would be ranked as if it had always been there. */
+    const meta = await readMeta(req.params.slug);
+    const kept = meta.order.filter((name) => name !== path.basename(full));
+    if (kept.length !== meta.order.length) {
+      meta.order = kept;
+      await writeMeta(req.params.slug, meta);
+    }
     res.json({ ok: true });
   } catch (err) {
     next(err);
