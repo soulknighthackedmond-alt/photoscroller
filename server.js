@@ -280,8 +280,55 @@ const app = express();
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '64kb' }));
 
-const TMP_DIR = path.join(os.tmpdir(), 'photoscroller-uploads');
-fs.mkdirSync(TMP_DIR, { recursive: true });
+/* Uploads are staged and then *moved* into the album folder. rename() only works
+   inside a single filesystem, and DATA_DIR is normally a mounted volume — a
+   different device from /tmp — so staging there fails with EXDEV. Stage inside
+   DATA_DIR when it is writable, fall back to the OS temp dir when it is not;
+   moveFile() below copes with either. */
+function pickTempDir() {
+  const preferred = path.join(DATA_DIR, '.uploads');
+  try {
+    fs.mkdirSync(preferred, { recursive: true });
+    return preferred;
+  } catch {
+    const fallback = path.join(os.tmpdir(), 'photoscroller-uploads');
+    fs.mkdirSync(fallback, { recursive: true });
+    return fallback;
+  }
+}
+const TMP_DIR = pickTempDir();
+
+/* Any file still staged at boot is an orphan from a container that was killed
+   mid-upload — nothing can be in flight before this process starts. Only sweep our
+   own dir under DATA_DIR; the OS temp fallback may be shared with another instance. */
+function sweepStaleUploads() {
+  if (!TMP_DIR.startsWith(DATA_DIR + path.sep)) return;
+  try {
+    for (const entry of fs.readdirSync(TMP_DIR, { withFileTypes: true })) {
+      if (entry.isFile()) fs.rmSync(path.join(TMP_DIR, entry.name), { force: true });
+    }
+  } catch {
+    /* a missing or unreadable staging dir is not fatal */
+  }
+}
+sweepStaleUploads();
+
+/* Staged files are removed before the response is sent, so a temp file can never
+   outlive the request that created it. */
+const cleanupStaged = (files) =>
+  Promise.all(files.map((file) => fsp.rm(file.path, { force: true }).catch(() => {})));
+
+/* rename() cannot cross a filesystem boundary, so fall back to copy + unlink.
+   Without this, every upload into a mounted volume 500s with EXDEV. */
+async function moveFile(src, dest) {
+  try {
+    await fsp.rename(src, dest);
+  } catch (err) {
+    if (err.code !== 'EXDEV') throw err;
+    await fsp.copyFile(src, dest);
+    await fsp.rm(src, { force: true });
+  }
+}
 
 /* Deliberately not fatal: a root-owned or read-only /data must not stop the
    container from starting — see the storage health note above. */
@@ -463,16 +510,14 @@ app.post('/api/albums/:slug/photos', requireAuth, upload.array('photos', MAX_FIL
     const saved = [];
     for (const file of files) {
       const target = await uniqueFileName(dir, file.originalname);
-      await fsp.rename(file.path, path.join(dir, target));
+      await moveFile(file.path, path.join(dir, target));
       saved.push(target);
     }
+    await cleanupStaged(files);
     res.json({ album: slug, saved: saved.length, files: saved, skipped: req.skippedFiles || [] });
   } catch (err) {
+    await cleanupStaged(files);
     next(err);
-  } finally {
-    for (const file of files) {
-      fsp.rm(file.path, { force: true }).catch(() => {});
-    }
   }
 });
 
@@ -514,6 +559,12 @@ app.get('/icons/:name', (req, res) => {
 /* iOS looks for these two paths at the root when it builds a home-screen icon */
 app.get('/apple-touch-icon.png', (_req, res) => sendIcon(res, 'apple-touch-icon.png'));
 app.get('/apple-touch-icon-precomposed.png', (_req, res) => sendIcon(res, 'apple-touch-icon.png'));
+
+/* browsers ask for /favicon.ico unprompted; without this the SPA catch-all
+   below answers that request with a page of HTML */
+app.get('/favicon.ico', (_req, res) => {
+  if (!sendIcon(res, 'icon-192.png')) res.status(404).end();
+});
 
 /* --- static + pages -------------------------------------------------- */
 
@@ -560,6 +611,7 @@ app.use((err, _req, res, _next) => {
 app.listen(PORT, () => {
   console.log(`photoscroller listening on :${PORT}`);
   console.log(`data dir: ${DATA_DIR} (${storage.ok ? 'writable' : 'NOT WRITABLE'})`);
+  console.log(`upload staging: ${TMP_DIR}`);
   if (!storage.ok) {
     console.error(
       `STORAGE NOT WRITABLE: ${storage.error}\n` +

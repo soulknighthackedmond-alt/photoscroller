@@ -131,6 +131,11 @@ data/albums/
 
 The folder name is the slug (URL-safe); the display name lives in `.album.json`. Deleting the folder deletes the album.
 
+Uploads are staged in `DATA_DIR/.uploads` and then moved into the album, so the move
+stays on one filesystem — a `rename()` across a mount point fails with `EXDEV`, and
+staging in `/tmp` would break every upload the moment you mount a volume. Anything
+still staged at boot is an orphan from a container killed mid-upload, and is swept.
+
 ## API
 
 | Method | Path | Auth | Purpose |
