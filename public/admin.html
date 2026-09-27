@@ -2,10 +2,17 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0b0b0f">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Photoscroller">
+<meta name="format-detection" content="telephone=no">
 <title>Upload · Photoscroller</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%236c5ce7'/><circle cx='16' cy='17' r='7' fill='none' stroke='white' stroke-width='2.5'/><rect x='9' y='7' width='8' height='4' rx='1.5' fill='white'/></svg>">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
 <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -18,7 +25,7 @@
     </svg>
     <span>Photoscroller</span>
   </a>
-  <nav class="chips"></nav>
+  <nav class="chips" aria-hidden="true"></nav>
   <div class="topbar-right">
     <a class="btn small ghost" href="/">View feed</a>
     <button class="btn small ghost hidden" id="logoutBtn">Log out</button>
@@ -27,14 +34,14 @@
 
 <main class="page">
   <h1>Upload</h1>
-  <p class="lead">Pick a folder of photos — the folder name becomes the album. Uploading needs the upload password.</p>
+  <p class="lead" id="lead">Pick a folder of photos — the folder name becomes the album.</p>
 
   <!-- login -->
   <section class="card" id="loginCard">
     <h2>Password required</h2>
     <p class="hint">Enter the upload password to add or remove albums.</p>
     <label class="field"><span>Password</span>
-      <input type="password" id="pw" autocomplete="current-password" placeholder="password">
+      <input type="password" id="pw" autocomplete="current-password" enterkeyhint="go" placeholder="password">
     </label>
     <div class="row"><button class="btn" id="loginBtn">Unlock</button></div>
     <div class="msg" id="loginMsg"></div>
@@ -43,17 +50,26 @@
   <!-- upload -->
   <section class="card hidden" id="uploadCard">
     <h2>New album</h2>
-    <p class="hint">Drop a folder anywhere on the box below, or click to choose one. Images only (jpg, png, gif, webp, avif, bmp).</p>
+    <p class="hint" id="sizeHint">Images only (jpg, png, gif, webp, avif, bmp).</p>
 
-    <label class="field"><span>Album name (defaults to the folder name)</span>
-      <input type="text" id="albumName" placeholder="e.g. Tokyo 2026">
+    <label class="field"><span id="albumLabel">Album name (defaults to the folder name)</span>
+      <input type="text" id="albumName" placeholder="e.g. Tokyo 2026" autocomplete="off" autocapitalize="words" enterkeyhint="done" maxlength="80">
     </label>
 
     <div class="dropzone" id="dropzone">
-      <strong>Drop a folder of photos here</strong>
-      <span id="dropInfo">or click to browse for a folder</span>
+      <strong id="dzTitle">Drop a folder of photos here</strong>
+      <span id="dzInfo">or click to browse for a folder</span>
     </div>
+
+    <div class="row">
+      <button class="btn ghost" id="pickFolderBtn" type="button">Choose folder</button>
+      <button class="btn ghost" id="pickPhotosBtn" type="button">Choose photos</button>
+    </div>
+
+    <!-- desktop folder picker -->
     <input type="file" id="folderInput" webkitdirectory directory multiple accept="image/*" class="hidden">
+    <!-- photo-library picker: the only option on iOS, and handy everywhere else -->
+    <input type="file" id="photoInput" multiple accept="image/*" class="hidden">
 
     <div class="row">
       <button class="btn" id="uploadBtn" disabled>Upload</button>
