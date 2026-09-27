@@ -90,6 +90,8 @@ async function render() {
   } else {
     albumsView.classList.add('hidden');
     feedView.classList.remove('hidden');
+    /* the feed is display:none until now, so its height could only be measured here */
+    syncScreen();
     await startFeed(r.album);
   }
   renderChips(r);
@@ -102,6 +104,8 @@ function renderChips(r) {
     el.className = 'chip';
     el.dataset.album = a.slug;
     el.href = '#/a/' + encodeURIComponent(a.slug);
+    /* safe: esc() escapes & < > " ' in the album name, and count is a number the
+       server computed from the directory listing */
     el.innerHTML = esc(a.name) + '<span class="n">' + a.count + '</span>';
     chipsEl.appendChild(el);
   }
@@ -154,6 +158,7 @@ async function startFeed(album) {
   state.loading = false;
   feedEl.innerHTML = '';
   feedEl.scrollTop = 0;
+  captionIndex = -1;
   await loadMore();
   updateHud();
 }
@@ -204,7 +209,15 @@ function appendPhotos(photos) {
     img.dataset.src = p.url;
     img.addEventListener('load', () => img.classList.add('loaded'));
     img.addEventListener('error', () => img.classList.add('loaded'));
-    img.addEventListener('click', () => openZoom(p));
+    /* blurred: the first tap reveals this one photo; only a revealed photo opens in the
+       zoom overlay, so a blurred picture can never be seen sharp by accident */
+    img.addEventListener('click', () => {
+      if (blurOn() && !item.classList.contains('revealed')) {
+        item.classList.add('revealed');
+        return;
+      }
+      openZoom(p);
+    });
 
     const meta = document.createElement('figcaption');
     meta.className = 'meta';
@@ -253,6 +266,7 @@ feedEl.addEventListener(
       scrollQueued = false;
       if (feedEl.scrollTop + feedEl.clientHeight * 2.2 >= feedEl.scrollHeight) loadMore();
       updateHud();
+      refreshCaption();
     });
   },
   { passive: true }
@@ -265,8 +279,25 @@ function updateHud() {
   }
   const idx = Math.min(currentIndex() + 1, state.photos.length);
   const total = state.total || state.photos.length;
-  hudEl.textContent = isTouch ? `${idx} / ${total} · swipe up` : `${idx} / ${total} · scroll, or use ↑ ↓`;
+  const how = blurOn() ? 'tap a photo to reveal it' : isTouch ? 'swipe up' : 'scroll, or use ↑ ↓';
+  hudEl.textContent = `${idx} / ${total} · ${how}`;
   hudEl.classList.remove('hidden');
+}
+
+/* On a phone the caption sits on top of the photo, so it fades out a few seconds after
+   a photo becomes current and comes back on the next one. */
+let captionIndex = -1;
+let captionTimer = null;
+function refreshCaption() {
+  if (!isTouch) return;
+  const index = currentIndex();
+  if (index === captionIndex) return;
+  captionIndex = index;
+  clearTimeout(captionTimer);
+  feedEl.querySelectorAll('.item.dim').forEach((el) => el.classList.remove('dim'));
+  const item = feedEl.querySelectorAll('.item')[index];
+  if (!item) return;
+  captionTimer = setTimeout(() => item.classList.add('dim'), 3000);
 }
 
 function currentIndex() {
@@ -305,11 +336,44 @@ document.addEventListener('keydown', (e) => {
   } else if (e.key === 'Home') {
     e.preventDefault();
     scrollToIndex(0);
+  } else if (e.key === 'b' || e.key === 'B') {
+    e.preventDefault();
+    setBlur(!blurOn());
   } else if (e.key === 'o' || e.key === 'Enter') {
     const p = state.photos[currentIndex()];
     if (p) openZoom(p);
   }
 });
+
+/* ---------------- blur thumbnails ----------------
+
+   An opt-in privacy screen: every thumbnail is blurred, and one tap reveals the photo
+   you are looking at. The choice is remembered across visits. */
+
+const BLUR_KEY = 'ps-blur';
+
+const blurOn = () => document.documentElement.classList.contains('blur-thumbs');
+
+function setBlur(on, save = true) {
+  document.documentElement.classList.toggle('blur-thumbs', on);
+  const btn = $('#blurBtn');
+  if (btn) {
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    btn.title = on ? 'Stop blurring thumbnails' : 'Blur all thumbnails';
+  }
+  /* switching it on re-hides anything already revealed */
+  if (on) feedEl.querySelectorAll('.item.revealed').forEach((el) => el.classList.remove('revealed'));
+  if (save) {
+    try {
+      localStorage.setItem(BLUR_KEY, on ? '1' : '0');
+    } catch {
+      /* private mode: the setting just doesn't survive the visit */
+    }
+  }
+  updateHud();
+}
+
+$('#blurBtn').addEventListener('click', () => setBlur(!blurOn()));
 
 /* ---------------- zoom ---------------- */
 
@@ -379,24 +443,42 @@ zoomEl.addEventListener(
 );
 zoomEl.addEventListener('touchend', () => { zoomTouchY = null; }, { passive: true });
 
-/* ---------------- rotation / resize ---------------- */
+/* ---------------- screen height / rotation ---------------- */
 
-/* A photo is exactly one viewport tall, so rotating the phone (or the mobile URL
-   bar changing height) moves the snap point — put the same photo back. */
+/* One number decides how tall a photo's screen is: the measured height of the scroll
+   container. iOS Safari resolves 100svh and the html/body height:100% chain against
+   different boxes, which made every item slightly taller than the area showing it —
+   a sliver of the next photo, a clipped bottom edge and jittery mandatory snapping. */
+function syncScreen() {
+  const root = document.documentElement;
+  const appH = root.clientHeight || window.innerHeight || 0;
+  if (appH) root.style.setProperty('--app-h', appH + 'px');
+  const feedH = feedEl.clientHeight;
+  if (feedH) root.style.setProperty('--screen', feedH + 'px');
+}
+
+/* Rotating the phone, or the URL bar growing and shrinking, changes that height, so
+   measure and then put the same photo back. The index is read BEFORE measuring:
+   scrollTop is in pixels, and a pixel means a different photo once the screen changes
+   height. */
 let resizeTimer = null;
 function resnap() {
-  if (route().view !== 'feed') return;
-  scrollToIndex(currentIndex(), false);
+  const index = route().view === 'feed' ? currentIndex() : -1;
+  syncScreen();
+  if (index < 0) return;
+  scrollToIndex(index, false);
   updateHud();
 }
-window.addEventListener('resize', () => {
+function scheduleResnap(delay) {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(resnap, 180);
-});
-window.addEventListener('orientationchange', () => {
-  clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(resnap, 320);
-});
+  resizeTimer = setTimeout(resnap, delay);
+}
+window.addEventListener('resize', () => scheduleResnap(180));
+window.addEventListener('orientationchange', () => scheduleResnap(320));
+/* visualViewport is the most reliable signal for the iOS URL bar moving */
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', () => scheduleResnap(180));
+}
 
 /* ---------------- boot ---------------- */
 
@@ -415,6 +497,13 @@ $('#shuffleBtn').addEventListener('click', () => {
 window.addEventListener('hashchange', render);
 
 (async function boot() {
+  /* measure before the first photo is created, so the very first screen is right */
+  syncScreen();
+  try {
+    setBlur(localStorage.getItem(BLUR_KEY) === '1', false);
+  } catch {
+    /* private mode: the default is unblurred */
+  }
   try {
     const data = await api('/api/albums');
     state.albums = data.albums;
@@ -423,4 +512,5 @@ window.addEventListener('hashchange', render);
     console.error(err);
   }
   await render();
+  syncScreen();
 })();
