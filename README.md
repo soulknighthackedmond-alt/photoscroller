@@ -6,7 +6,7 @@ A tiny self-hosted photo scroller in the spirit of Scrolller. Drop a **folder** 
 - **Password-gated uploads** — adding or deleting albums needs the upload password (default `admin`).
 - **Folder upload** — drag a folder onto the page (or pick one); the folder name becomes the album name.
 - **Scrolller-style feed** — one image per screen, snap scrolling, arrow-key / `j` `k` / space navigation, click to zoom.
-- **Works on phones** — swipe through the feed, tap a photo to zoom, upload straight from the camera roll, and add it to your home screen as an app.
+- **Installs as an app** — add it to a phone's home screen and it opens full screen with its own icon, and keeps working when the signal drops.
 - **Uploads that survive a phone signal** — photos go up in batches, and anything the server refuses (HEIC, oversized) is named instead of quietly dropped.
 - **No database** — albums are plain folders under `DATA_DIR/albums/<slug>/`.
 - **One container, no build step** — Node + Express + a static frontend, so it deploys on Coolify (or anywhere Docker runs) in one go.
@@ -52,6 +52,28 @@ Then open `/admin`, unlock with the password, and drop a folder of photos in.
 5. Deploy, then hit the domain Coolify gives you. `/admin` is where you upload.
 
 The health check hits `/api/albums`, so Coolify will mark the container healthy once it can read the albums folder.
+
+## Install it as an app
+
+Open the site on a phone and add it to the home screen. It then launches full screen with no browser bars and its own icon, and it opens again with no signal.
+
+- **iPhone / iPad, Safari:** tap **Share**, then **Add to Home Screen**. Safari never offers an install prompt, so the viewer shows a one-time hint pointing at the button — dismiss it and it stays dismissed. Safari is the only iOS browser that can do this; Chrome and Firefox on iOS cannot.
+- **Android / desktop Chrome:** an **Install** button appears in the top bar whenever the browser offers one (its own menu has *Install app* too).
+
+What makes it behave like an app instead of a bookmark:
+
+| Piece | What it does |
+| --- | --- |
+| `public/manifest.webmanifest` | `display: standalone`, `start_url` and `scope` of `/`, and the icon set: 192px, 512px, a maskable 512px and the 180px apple-touch icon |
+| `public/sw.js` | Service worker — caches the shell so the app opens offline, and Chrome will not offer to install a site without one |
+| `public/pwa.js` | Registers the worker, wires up the install button, shows the iOS hint, and flags standalone mode |
+| Apple meta tags + `apple-touch-icon` | What iOS reads when it builds the home-screen icon and launches the app full screen |
+
+Worth knowing:
+
+- The icons are **drawn in code and encoded to PNG at runtime** (`lib/icons.js`, served from `/icons/*.png`) so the repo carries no binary blobs. `GET /apple-touch-icon.png` answers too, because that is the path iOS probes when it builds the icon.
+- The service worker is **network-first** and never touches `/api/` or `/i/`: a redeploy is picked up on the next load, and the feed and uploads always go to the server. It needs https (or localhost) — on a plain-http origin the browser skips it and everything else still works.
+- `sw.js`, the HTML, the CSS and the JS are served `no-cache`, so a redeploy can never be stuck behind a cached copy on a phone; photos keep their one-year immutable cache.
 
 ## On a phone
 
@@ -99,6 +121,7 @@ The folder name is the slug (URL-safe); the display name lives in `.album.json`.
 | `GET` | `/api/albums` | public | Every album: slug, name, photo count, cover URL |
 | `GET` | `/api/feed?album=&offset=&limit=&order=shuffle\|recent&seed=` | public | Paged photo feed (all albums when `album` is omitted) |
 | `GET` | `/i/:album/:file` | public | The image itself |
+| `GET` | `/icons/*.png`, `/apple-touch-icon.png` | public | Home-screen icons — drawn and PNG-encoded in-process, never committed as files |
 | `GET` | `/api/session` | public | Whether this browser is logged in |
 | `GET` | `/api/config` | public | Upload limits the upload page needs: `{ maxFileMb, maxFiles }` |
 | `POST` | `/api/login` | — | `{ "password": "..." }` → sets an HttpOnly cookie (7 days) |
