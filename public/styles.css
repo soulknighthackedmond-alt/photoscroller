@@ -502,9 +502,43 @@ input:focus { outline: 2px solid rgba(108, 92, 231, .55); outline-offset: 0; bor
   .zoom-hint { display: none; }
 }
 
+/* ---------- add to home screen ---------- */
+
+/* sits above the HUD (30) and below the zoom overlay (60), so opening a photo
+   never leaves a banner floating over it */
+.a2hs {
+  position: fixed;
+  left: calc(10px + var(--safe-left, 0px));
+  right: calc(10px + var(--safe-right, 0px));
+  bottom: calc(10px + var(--safe-bottom, 0px));
+  z-index: 35;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: rgba(20, 20, 27, .96);
+  border: 1px solid var(--line);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, .55);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  animation: a2hs-in .28s ease-out;
+}
+
+.a2hs .grow { flex: 1 1 auto; min-width: 0; }
+.a2hs strong { display: block; font-size: 14px; font-weight: 600; margin-bottom: 3px; }
+.a2hs p { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--muted); }
+.a2hs .icon-btn { flex: 0 0 auto; white-space: nowrap; }
+
+@keyframes a2hs-in {
+  from { transform: translateY(14px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
 /* ---------- users who ask for less motion ---------- */
 
 @media (prefers-reduced-motion: reduce) {
   .item img, .album-card, .btn, .bar > i, .item .meta { transition: none; }
   .feed { scroll-behavior: auto; }
+  .a2hs { animation: none; }
 }
