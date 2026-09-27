@@ -100,14 +100,22 @@ The viewer is built for touch rather than shrunk from the desktop layout:
 | --- | --- |
 | Swipe up / down | next / previous photo (native scroll-snap, one photo per screen) |
 | Tap a photo | zoom in; tap again for full size; swipe down, tap Close, or tap the backdrop to dismiss |
+| Tap a photo while blurred | reveal that one photo; a second tap zooms it |
 | Tap an album chip | jump between albums |
 
 Details that matter on a handset:
 
-- **Height** is `100svh`, so a photo always fits while the browser's address bar slides in and out, and everything pinned to an edge respects the notch and home-indicator insets (`env(safe-area-inset-*)`).
-- **Captions stay visible** — there is no hover on a phone, so the album/photo label is shown rather than waiting for a mouse.
+- **Height is measured, not guessed.** One number decides how tall a photo's screen is — the measured height of the scroll container, published as `--screen`. iOS Safari resolves `100svh` and the `html, body { height: 100% }` chain against different boxes, which used to make every photo slightly taller than the area showing it: a sliver of the next photo, a clipped bottom edge and mandatory snapping that jittered. Rotating the phone, or the address bar sliding in and out, re-measures and puts the same photo back.
+- **A photo fills the box it is given.** The `<img>` is `width: 100%; height: 100%` with `object-fit: contain`, so a 16:9 shot gets the full width of the screen and any letterboxing happens inside the element. On touch there is no padding at all — only the landscape notch inset — and the top bar drops to 48px, so the picture gets every pixel going. Anything pinned to an edge still respects the notch and home-indicator insets (`env(safe-area-inset-*)`).
+- **The caption gets out of the way.** There is no hover on a phone, so the album/photo label is shown, then fades out a few seconds after a photo becomes current and comes back on the next one.
+- **The zoom overlay is pinned to the visible viewport.** A `position: fixed` element is sized against the *large* viewport on iOS Safari, which puts the bottom of the overlay — and its Close button — below the fold. `--app-h` is the measured visible height instead.
 - **Tap targets** are 44px on touch screens, and text fields are 16px so iOS does not zoom the page when the password box is focused.
-- **Rotating the phone re-snaps** to the photo you were on instead of leaving the feed stranded between two images.
+
+### Blurring thumbnails
+
+The **Blur** button in the top bar hides every thumbnail behind a blur — feed photos and album covers alike. Tap a photo to reveal that one; tap it again to zoom. A blurred photo can never reach the zoom overlay, so nothing is revealed by accident. The setting is remembered across visits, and `b` toggles it from the keyboard.
+
+This is a privacy screen, not access control: the images are still served normally to anyone with the URL. It stops a photo appearing on screen before you ask for it, and nothing more.
 
 Uploading from a phone:
 
@@ -164,6 +172,7 @@ still staged at boot is an orphan from a container killed mid-upload, and is swe
 | `↑` / `k` | previous photo |
 | `Enter` / `o` | zoom the current photo |
 | `Esc` | close zoom |
+| `b` | blur / unblur every thumbnail |
 
 ## Security notes
 
