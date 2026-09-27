@@ -42,6 +42,48 @@ const ICONS = require('./lib/icons');
  * storage helpers
  * ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ *
+ * storage health
+ *
+ * A volume the process cannot write is the most common way a self-hosted
+ * deploy of this app "breaks": /data arrives owned by root while the app runs
+ * unprivileged. That must not kill the container — a crash-looping process
+ * tells you nothing, whereas a server that starts and reports
+ * "storage not writable" tells you exactly which setting to fix.
+ * ------------------------------------------------------------------ */
+
+const storage = { ok: false, path: DATA_DIR, albumsDir: ALBUMS_DIR, error: null, checkedAt: null };
+
+function noteStorage(err) {
+  storage.ok = false;
+  storage.error = err ? `${err.code || 'ERROR'}: ${err.message}` : 'unknown storage error';
+  storage.checkedAt = new Date().toISOString();
+}
+
+/* Writable check: creates the albums dir and writes a probe file, so a read-only
+   mount is caught at boot rather than discovered at the first upload. */
+function checkStorage() {
+  const probe = path.join(DATA_DIR, `.write-probe-${process.pid}`);
+  try {
+    fs.mkdirSync(ALBUMS_DIR, { recursive: true });
+    fs.writeFileSync(probe, 'ok');
+    fs.rmSync(probe, { force: true });
+    storage.ok = true;
+    storage.error = null;
+  } catch (err) {
+    noteStorage(err);
+    try {
+      fs.rmSync(probe, { force: true });
+    } catch {
+      /* nothing to clean up */
+    }
+  }
+  storage.checkedAt = new Date().toISOString();
+  return storage;
+}
+
+const storageSummary = () => ({ ok: storage.ok, path: storage.path, error: storage.error });
+
 function slugify(input) {
   const slug = String(input || '')
     .normalize('NFKD')
@@ -67,8 +109,14 @@ function photoPath(slug, file) {
   return full;
 }
 
+/* Reads must never throw on a broken volume: the list comes back empty and
+   /api/health explains why, instead of the page 500ing. */
 async function ensureDirs() {
-  await fsp.mkdir(ALBUMS_DIR, { recursive: true });
+  try {
+    await fsp.mkdir(ALBUMS_DIR, { recursive: true });
+  } catch (err) {
+    noteStorage(err);
+  }
 }
 
 async function readMeta(slug) {
@@ -234,7 +282,10 @@ app.use(express.json({ limit: '64kb' }));
 
 const TMP_DIR = path.join(os.tmpdir(), 'photoscroller-uploads');
 fs.mkdirSync(TMP_DIR, { recursive: true });
-fs.mkdirSync(ALBUMS_DIR, { recursive: true });
+
+/* Deliberately not fatal: a root-owned or read-only /data must not stop the
+   container from starting — see the storage health note above. */
+checkStorage();
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -290,10 +341,23 @@ app.post('/api/logout', (_req, res) => {
 
 app.get('/api/albums', async (_req, res, next) => {
   try {
-    res.json({ albums: await listAlbums() });
+    res.json({ albums: await listAlbums(), storage: storageSummary() });
   } catch (err) {
     next(err);
   }
+});
+
+/* Health: 200 only when albums can actually be read *and* written, so Coolify
+   shows an unhealthy container instead of a green one whose uploads all fail. */
+app.get('/api/health', (_req, res) => {
+  /* re-probe only while broken, so a fixed volume recovers without a restart
+     and a healthy volume is not written to on every health check */
+  if (!storage.ok) checkStorage();
+  res.status(storage.ok ? 200 : 503).json({
+    ok: storage.ok,
+    storage: storageSummary(),
+    uptime: Math.round(process.uptime()),
+  });
 });
 
 app.get('/api/feed', async (req, res, next) => {
@@ -478,12 +542,30 @@ app.use((err, _req, res, _next) => {
   if (err && (err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE')) {
     return res.status(400).json({ error: `too many files in one upload (max ${MAX_FILES})` });
   }
+  /* a read-only or full volume is a configuration problem, so name it instead
+     of returning a bare 500 that says nothing */
+  if (err && ['EACCES', 'EPERM', 'EROFS', 'ENOSPC', 'ENOTDIR'].includes(err.code)) {
+    console.error(err);
+    return res.status(507).json({
+      error:
+        `storage not writable (${err.code}) at ${DATA_DIR} — mount a writable volume there ` +
+        'and set DATA_DIR to it',
+      storage: storageSummary(),
+    });
+  }
   console.error(err);
   res.status(500).json({ error: 'server error' });
 });
 
 app.listen(PORT, () => {
   console.log(`photoscroller listening on :${PORT}`);
-  console.log(`data dir: ${DATA_DIR}`);
+  console.log(`data dir: ${DATA_DIR} (${storage.ok ? 'writable' : 'NOT WRITABLE'})`);
+  if (!storage.ok) {
+    console.error(
+      `STORAGE NOT WRITABLE: ${storage.error}\n` +
+        `  albums cannot be saved. Mount a writable volume at ${DATA_DIR} ` +
+        '(on Coolify: Storages → add a volume at /data, and set DATA_DIR=/data), then restart.'
+    );
+  }
   if (PASSWORD === 'admin') console.log('WARNING: using the default upload password "admin" — set UPLOAD_PASSWORD.');
 });
