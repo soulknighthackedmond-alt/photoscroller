@@ -1,0 +1,19 @@
+{
+  "name": "photoscroller",
+  "version": "1.0.0",
+  "private": false,
+  "description": "Scrolller-style photo scroller: upload a folder of images as an album, then browse every album in an endless vertical feed.",
+  "main": "server.js",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1"
+  }
+}

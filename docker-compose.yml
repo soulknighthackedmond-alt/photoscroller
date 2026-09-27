@@ -1,0 +1,16 @@
+# Local run: docker compose up --build  →  http://localhost:3000
+services:
+  photoscroller:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      UPLOAD_PASSWORD: admin
+      SESSION_SECRET: change-me-to-a-long-random-string
+      DATA_DIR: /data
+    volumes:
+      - photos:/data
+    restart: unless-stopped
+
+volumes:
+  photos:
