@@ -18,6 +18,7 @@ document.documentElement.classList.toggle('is-hover', !isTouch);
 
 const state = {
   albums: [],
+  storage: null,
   photos: [],
   offset: 0,
   limit: 12,
@@ -44,6 +45,27 @@ async function api(url) {
   const res = await fetch(url, { headers: { accept: 'application/json' } });
   if (!res.ok) throw new Error('request failed: ' + res.status);
   return res.json();
+}
+
+/* ---------------- storage problems ----------------
+
+   A volume the app cannot write (typically /data not mounted, or owned by root)
+   means there is genuinely nothing to show. Say so, with the fix, instead of the
+   cheerful "No photos yet" that hides a broken deploy. */
+
+const storageBroken = () => !!(state.storage && state.storage.ok === false);
+
+function storageNoticeHtml() {
+  const s = state.storage || {};
+  /* Safe as markup: this is a fixed string plus esc()'d values — nothing the
+     server sends reaches the DOM unescaped. */
+  const detail = [s.error, s.path].filter(Boolean).map(esc).join(' · ');
+  return (
+    '<h2>Storage isn’t writable</h2>' +
+    '<p>The app can’t read or save albums, so there is nothing to show. On Coolify, add a volume mounted at ' +
+    '<code>/data</code>, set <code>DATA_DIR=/data</code>, and redeploy.</p>' +
+    (detail ? '<p class="muted">' + detail + '</p>' : '')
+  );
 }
 
 /* ---------------- routing ---------------- */
@@ -100,7 +122,9 @@ async function renderAlbums() {
 
   grid.innerHTML = '';
   if (!state.albums.length) {
-    grid.innerHTML = '<p class="muted">Nothing uploaded yet. <a href="/admin">Upload a folder</a> to get started.</p>';
+    grid.innerHTML = storageBroken()
+      ? storageNoticeHtml()
+      : '<p class="muted">Nothing uploaded yet. <a href="/admin">Upload a folder</a> to get started.</p>';
     return;
   }
   for (const a of state.albums) {
@@ -151,7 +175,13 @@ async function loadMore() {
     state.offset += data.photos.length;
     if (!data.photos.length || state.offset >= data.total) state.done = true;
     appendPhotos(data.photos);
-    $('#feedEmpty').classList.toggle('hidden', state.total > 0);
+    const empty = $('#feedEmpty');
+    if (storageBroken()) {
+      empty.innerHTML = storageNoticeHtml();
+      empty.classList.remove('hidden');
+    } else {
+      empty.classList.toggle('hidden', state.total > 0);
+    }
   } catch (err) {
     console.error(err);
   } finally {
@@ -388,6 +418,7 @@ window.addEventListener('hashchange', render);
   try {
     const data = await api('/api/albums');
     state.albums = data.albums;
+    state.storage = data.storage || null;
   } catch (err) {
     console.error(err);
   }
