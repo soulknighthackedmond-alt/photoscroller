@@ -6,6 +6,8 @@ A tiny self-hosted photo scroller in the spirit of Scrolller. Drop a **folder** 
 - **Password-gated uploads** — adding or deleting albums needs the upload password (default `admin`).
 - **Folder upload** — drag a folder onto the page (or pick one); the folder name becomes the album name.
 - **Scrolller-style feed** — one image per screen, snap scrolling, arrow-key / `j` `k` / space navigation, click to zoom.
+- **In the order you uploaded them** — the feed runs through albums and photos in the order they arrived, not by filename or mtime. **Shuffle** is one tap away when you want it.
+- **Fit or fill** — see the whole photo, as large as the screen allows, with the letterbox filled by the photo's own blurred colours; or fill the screen and crop the edges.
 - **Installs as an app** — add it to a phone's home screen and it opens full screen with its own icon, and keeps working when the signal drops.
 - **Uploads that survive a phone signal** — photos go up in batches, and anything the server refuses (HEIC, oversized) is named instead of quietly dropped.
 - **No database** — albums are plain folders under `DATA_DIR/albums/<slug>/`.
@@ -99,14 +101,17 @@ The viewer is built for touch rather than shrunk from the desktop layout:
 | Gesture | Action |
 | --- | --- |
 | Swipe up / down | next / previous photo (native scroll-snap, one photo per screen) |
-| Tap a photo | zoom in; tap again for full size; swipe down, tap Close, or tap the backdrop to dismiss |
+| Tap a photo | fill the screen, tap again for full size, tap again to fit; swipe down, tap Close, or tap the backdrop to dismiss |
 | Tap a photo while blurred | reveal that one photo; a second tap zooms it |
 | Tap an album chip | jump between albums |
 
 Details that matter on a handset:
 
 - **Height is measured, not guessed.** One number decides how tall a photo's screen is — the measured height of the scroll container, published as `--screen`. iOS Safari resolves `100svh` and the `html, body { height: 100% }` chain against different boxes, which used to make every photo slightly taller than the area showing it: a sliver of the next photo, a clipped bottom edge and mandatory snapping that jittered. Rotating the phone, or the address bar sliding in and out, re-measures and puts the same photo back.
-- **A photo fills the box it is given.** The `<img>` is `width: 100%; height: 100%` with `object-fit: contain`, so a 16:9 shot gets the full width of the screen and any letterboxing happens inside the element. On touch there is no padding at all — only the landscape notch inset — and the top bar drops to 48px, so the picture gets every pixel going. Anything pinned to an edge still respects the notch and home-indicator insets (`env(safe-area-inset-*)`).
+- **A photo gets every pixel it can.** The `<img>` is `width: 100%; height: 100%` with `object-fit: contain`, so a 16:9 shot gets the full width of the screen and any letterboxing happens inside the element. On touch there is no padding at all — only the landscape notch inset — and the top bar drops to 48px. Anything pinned to an edge still respects the notch and home-indicator insets (`env(safe-area-inset-*)`).
+- **The letterbox is the photo's own colours.** On a portrait phone a 16:9 shot can only ever be as wide as the screen — roughly a third of its height — and the rest used to be flat black, which made the photo read as small. That space is now filled with the same photo, blurred and darkened (`.item::before`, the same URL, so no extra request). It is hidden while thumbnails are blurred, so a privacy screen stays private.
+- **Fit and Fill.** `Fit` (the default) shows the whole photo at the largest size that fits. `Fill` covers the screen and crops the edges — the only way a landscape photo gets bigger on a portrait screen. The button in the top bar switches between them and the choice is remembered; `f` does the same from a keyboard.
+- **Tapping a photo now actually zooms.** The overlay cycles fit → fill → 100%, so the first tap on a landscape shot is a visible step up rather than the same size it already was.
 - **The caption gets out of the way.** There is no hover on a phone, so the album/photo label is shown, then fades out a few seconds after a photo becomes current and comes back on the next one.
 - **The zoom overlay is pinned to the visible viewport.** A `position: fixed` element is sized against the *large* viewport on iOS Safari, which puts the bottom of the overlay — and its Close button — below the fold. `--app-h` is the measured visible height instead.
 - **Tap targets** are 44px on touch screens, and text fields are 16px so iOS does not zoom the page when the password box is focused.
@@ -130,14 +135,16 @@ Uploading from a phone:
 ```
 data/albums/
   tokyo-2026/
-    .album.json      # { "name": "Tokyo 2026", "createdAt": "..." }
+    .album.json      # { "name": "Tokyo 2026", "createdAt": "...", "order": [...] }
     DSC_0001.jpg
     DSC_0002.jpg
   camping/
     ...
 ```
 
-The folder name is the slug (URL-safe); the display name lives in `.album.json`. Deleting the folder deletes the album.
+The folder name is the slug (URL-safe); the display name and the photo order live in `.album.json`. Deleting the folder deletes the album.
+
+`order` lists the filenames in the sequence they were uploaded, and the feed reads the album back in that sequence. It is recorded when each file is saved rather than worked out later, because neither mtime nor the filename can be trusted for it: one upload batch can share a millisecond, and a copy or restore rewrites mtimes wholesale. A photo with no recorded entry — an album made by hand, or one made before this existed — falls back to mtime and then filename, so the result is always deterministic. Deleting a photo removes it from the list.
 
 Uploads are staged in `DATA_DIR/.uploads` and then moved into the album, so the move
 stays on one filesystem — a `rename()` across a mount point fails with `EXDEV`, and
@@ -149,7 +156,7 @@ still staged at boot is an orphan from a container killed mid-upload, and is swe
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | `GET` | `/api/albums` | public | Every album: slug, name, photo count, cover URL — plus `storage: { ok, path, error }` |
-| `GET` | `/api/feed?album=&offset=&limit=&order=shuffle\|recent&seed=` | public | Paged photo feed (all albums when `album` is omitted) |
+| `GET` | `/api/feed?album=&offset=&limit=&order=upload\|shuffle\|recent&seed=` | public | Paged photo feed (all albums when `album` is omitted) |
 | `GET` | `/i/:album/:file` | public | The image itself |
 | `GET` | `/icons/*.png`, `/apple-touch-icon.png` | public | Home-screen icons — drawn and PNG-encoded in-process, never committed as files |
 | `GET` | `/api/session` | public | Whether this browser is logged in |
@@ -162,7 +169,7 @@ still staged at boot is an orphan from a container killed mid-upload, and is swe
 | `DELETE` | `/api/albums/:slug` | password | Deletes an album and its photos |
 | `DELETE` | `/api/albums/:slug/photos/:file` | password | Deletes one photo |
 
-`order=shuffle` uses a seeded shuffle, so paging through the feed stays stable instead of repeating images.
+`order=upload` is the default: albums oldest first, and inside each album the order the photos were uploaded in. `order=shuffle` uses a seeded shuffle, so paging through the feed stays stable instead of repeating images; `order=recent` sorts newest-first.
 
 ## Keyboard shortcuts (desktop)
 
@@ -173,6 +180,8 @@ still staged at boot is an orphan from a container killed mid-upload, and is swe
 | `Enter` / `o` | zoom the current photo |
 | `Esc` | close zoom |
 | `b` | blur / unblur every thumbnail |
+| `f` | fit / fill the screen |
+| `s` | shuffle / back to uploaded order |
 
 ## Security notes
 
