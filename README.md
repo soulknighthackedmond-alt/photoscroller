@@ -185,10 +185,6 @@ Dockerfile           Production image (node:20-alpine, volume at /data)
 docker-compose.yml   Local run
 ```
 
-## License
-
-MIT — see [LICENSE](LICENSE).
-
 ## Reaching the app from your network
 
 Coolify puts every app behind its own Traefik proxy and routes by **hostname**, not by published host ports. Two consequences are worth knowing before blaming the container:
@@ -214,3 +210,7 @@ Put a Cloudflare Tunnel in front (Coolify ships it as a service template). You g
 ### The home-screen app over plain http
 
 Icons, `apple-touch-icon` and the standalone meta tags all work over plain http, so Share -> Add to Home Screen still gives you a full-screen app on iOS. The **service worker does not** - it needs a secure context, so over `http://<lan-ip>:3000` there is no offline caching and Chrome will not offer its install dialog. Serve it over https (tunnel or domain) for the complete PWA.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
