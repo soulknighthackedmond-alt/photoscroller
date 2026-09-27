@@ -3,6 +3,7 @@
 A tiny self-hosted photo scroller in the spirit of Scrolller. Drop a **folder** of images in, it becomes an **album**, and every album is listed for anyone to open in an endless vertical feed.
 
 - **Public browsing** — anyone with the link can scroll the feed and open albums.
+- **Opens on the album list** — a bare address, a reload and the installed app all land on **Albums**; the mixed **Everything** feed is one chip away.
 - **Password-gated uploads** — adding or deleting albums needs the upload password (default `admin`).
 - **Folder upload** — drag a folder onto the page (or pick one); the folder name becomes the album name.
 - **Scrolller-style feed** — one image per screen, snap scrolling, arrow-key / `j` `k` / space navigation, pinch or double-tap to zoom.

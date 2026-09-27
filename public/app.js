@@ -78,6 +78,11 @@ function route() {
   const parts = hash.split('/').filter(Boolean);
   if (parts[0] === 'albums') return { view: 'albums' };
   if (parts[0] === 'a' && parts[1]) return { view: 'feed', album: decodeURIComponent(parts[1]) };
+  /* No route at all - a first visit, a reload of the bare address, or the installed app
+     opening at start_url - lands on the album list: picking an album is the useful first
+     move, and the Everything feed is one chip away. An explicit "#/" is still the
+     Everything feed, so that chip is not swallowed by this default. */
+  if (!location.hash || location.hash === '#') return { view: 'albums' };
   return { view: 'feed', album: null };
 }
 
@@ -781,7 +786,12 @@ function setShuffle(on, save = true) {
   startFeed(route().album || null);
 }
 
-$('#shuffleBtn').addEventListener('click', () => setShuffle(!shuffleOn()));
+$('#shuffleBtn').addEventListener('click', () => {
+  setShuffle(!shuffleOn());
+  /* On the album list the feed is off screen, so a reshuffle would look like nothing
+     happened: take the tap as "show me the feed". Inside an album the view stays put. */
+  if (route().view === 'albums') location.hash = '#/';
+});
 
 window.addEventListener('hashchange', render);
 
