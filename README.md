@@ -5,9 +5,9 @@ A tiny self-hosted photo scroller in the spirit of Scrolller. Drop a **folder** 
 - **Public browsing** — anyone with the link can scroll the feed and open albums.
 - **Password-gated uploads** — adding or deleting albums needs the upload password (default `admin`).
 - **Folder upload** — drag a folder onto the page (or pick one); the folder name becomes the album name.
-- **Scrolller-style feed** — one image per screen, snap scrolling, arrow-key / `j` `k` / space navigation, click to zoom.
+- **Scrolller-style feed** — one image per screen, snap scrolling, arrow-key / `j` `k` / space navigation, pinch or double-tap to zoom.
 - **In the order you uploaded them** — the feed runs through albums and photos in the order they arrived, not by filename or mtime. **Shuffle** is one tap away when you want it.
-- **Fit or fill** — see the whole photo, as large as the screen allows, with the letterbox filled by the photo's own blurred colours; or fill the screen and crop the edges.
+- **Fill by default, fit on demand** — the feed fills the screen so a landscape shot is as big as the phone allows; tap **Fit** to see the whole photo, letterbox filled by its own blurred colours.
 - **Installs as an app** — add it to a phone's home screen and it opens full screen with its own icon, and keeps working when the signal drops.
 - **Uploads that survive a phone signal** — photos go up in batches, and anything the server refuses (HEIC, oversized) is named instead of quietly dropped.
 - **No database** — albums are plain folders under `DATA_DIR/albums/<slug>/`.
@@ -101,8 +101,19 @@ The viewer is built for touch rather than shrunk from the desktop layout:
 | Gesture | Action |
 | --- | --- |
 | Swipe up / down | next / previous photo (native scroll-snap, one photo per screen) |
-| Tap a photo | fill the screen, tap again for full size, tap again to fit; swipe down, tap Close, or tap the backdrop to dismiss |
-| Tap a photo while blurred | reveal that one photo; a second tap zooms it |
+| Tap a photo | open it. The photo takes no tap of its own, so a tap can never fight a drag |
+| Tap a photo while blurred | reveal that one photo; a second tap opens it |
+
+Inside the zoom overlay:
+
+| Gesture | Action |
+| --- | --- |
+| Pinch | zoom about the point between your fingers, 100% to 800% |
+| Double-tap | in to 250% about the tap, and back out to the whole photo |
+| Drag | pan the photo, stopping at its edge instead of losing it off-screen |
+| Swipe down at fit size | close the overlay |
+| `+` / `−` / the read-out | zoom in, zoom out, back to the whole photo |
+| Backdrop, Close or `Esc` | dismiss |
 | Tap an album chip | jump between albums |
 
 Details that matter on a handset:
@@ -110,10 +121,10 @@ Details that matter on a handset:
 - **Height is measured, not guessed.** One number decides how tall a photo's screen is — the measured height of the scroll container, published as `--screen`. iOS Safari resolves `100svh` and the `html, body { height: 100% }` chain against different boxes, which used to make every photo slightly taller than the area showing it: a sliver of the next photo, a clipped bottom edge and mandatory snapping that jittered. Rotating the phone, or the address bar sliding in and out, re-measures and puts the same photo back.
 - **A photo gets every pixel it can.** The `<img>` is `width: 100%; height: 100%` with `object-fit: contain`, so a 16:9 shot gets the full width of the screen and any letterboxing happens inside the element. On touch there is no padding at all — only the landscape notch inset — and the top bar drops to 48px. Anything pinned to an edge still respects the notch and home-indicator insets (`env(safe-area-inset-*)`).
 - **The letterbox is the photo's own colours.** On a portrait phone a 16:9 shot can only ever be as wide as the screen — roughly a third of its height — and the rest used to be flat black, which made the photo read as small. That space is now filled with the same photo, blurred and darkened (`.item::before`, the same URL, so no extra request). It is hidden while thumbnails are blurred, so a privacy screen stays private.
-- **Fit and Fill.** `Fit` (the default) shows the whole photo at the largest size that fits. `Fill` covers the screen and crops the edges — the only way a landscape photo gets bigger on a portrait screen. The button in the top bar switches between them and the choice is remembered; `f` does the same from a keyboard.
-- **Tapping a photo now actually zooms.** The overlay cycles fit → fill → 100%, so the first tap on a landscape shot is a visible step up rather than the same size it already was.
+- **Fill is the default; Fit is one tap away.** A 16:9 photo shown whole on a portrait phone is only as wide as the screen — about a quarter of its height, which is the strip you have to squint at — so the feed fills the screen unless you choose otherwise. `Fit` shows the whole photo at the largest size that fits, with the leftover space filled by its own blurred colours. The top-bar button switches between them, the choice is remembered, and `f` does the same from a keyboard.
+- **Zooming is accurate, and it comes back.** The overlay opens showing the whole photo, and zooms about whatever point you touched — up to 800%, which for a 1920px-wide shot on a 390px screen is past its own pixels. Double-tap zooms in about the tap and back out again; a drag pans and stops at the photo edge.
 - **The caption gets out of the way.** There is no hover on a phone, so the album/photo label is shown, then fades out a few seconds after a photo becomes current and comes back on the next one.
-- **The zoom overlay is pinned to the visible viewport.** A `position: fixed` element is sized against the *large* viewport on iOS Safari, which puts the bottom of the overlay — and its Close button — below the fold. `--app-h` is the measured visible height instead.
+- **The zoom overlay is pinned to the visible viewport, and its arithmetic is exact.** A `position: fixed` element is sized against the *large* viewport on iOS Safari, which puts the bottom of the overlay — and its controls — below the fold. `--app-h` is the measured visible height instead. Inside it the photo is laid out at exactly its fit size in pixels and then moved by a single `transform`, so the photo point under your finger stays under your finger. Pinch, drag, wheel, double-tap and the buttons all go through the pure functions in `public/zoommath.js` — no DOM in that file, which is what lets the test harness check the arithmetic numerically: a zoom in and back out returns to the same pixel, and 500 random zooms drift by less than a thousandth of a pixel.
 - **Tap targets** are 44px on touch screens, and text fields are 16px so iOS does not zoom the page when the password box is focused.
 
 ### Blurring thumbnails
@@ -177,8 +188,10 @@ still staged at boot is an orphan from a container killed mid-upload, and is swe
 | --- | --- |
 | `↓` / `j` / `Space` | next photo |
 | `↑` / `k` | previous photo |
-| `Enter` / `o` | zoom the current photo |
+| `Enter` / `o` | open the current photo |
 | `Esc` | close zoom |
+| `+` / `-` | zoom in / out about the middle of the screen (or scroll, or ctrl+scroll for a trackpad pinch) |
+| `0` | back to the whole photo |
 | `b` | blur / unblur every thumbnail |
 | `f` | fit / fill the screen |
 | `s` | shuffle / back to uploaded order |
@@ -195,7 +208,8 @@ still staged at boot is an orphan from a container killed mid-upload, and is swe
 ```
 server.js            Express app: auth, albums, feed, uploads
 public/index.html    Viewer shell (feed + album grid)
-public/app.js        Feed, routing, keyboard nav, zoom
+public/app.js        Feed, routing, keyboard nav, zoom gestures
+public/zoommath.js   The zoom arithmetic (no DOM, so it can be tested)
 public/admin.html    Upload page
 public/admin.js      Password gate, folder/photo upload with progress, album management
 public/styles.css    Dark theme (touch targets, safe-area insets, dynamic viewport units)
