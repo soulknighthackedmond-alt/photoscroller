@@ -37,8 +37,12 @@ Then open `/admin`, unlock with the password, and drop a folder of photos in.
 1. **New Resource → Public Repository**, paste the repo URL:
    `https://github.com/soulknighthackedmond-alt/photoscroller`
    Branch `main`, **Build Pack: Dockerfile** (Coolify picks it up automatically).
-2. **Ports**: expose `3000` (the Dockerfile already declares `EXPOSE 3000`).
-3. **Storages → Add volume**: mount a persistent volume at `/data`. Without this, albums disappear on every redeploy — this is the one step people forget.
+2. **How the app gets reached** — the container listens on `3000` (`EXPOSE 3000`), but Coolify does **not** publish that port on the host by default; it routes through its own Traefik proxy by domain. Pick one:
+   - **Use the domain (the default):** put a hostname in the resource's **Domains** field (`photos.example.com`, or a `<name>.<server-ip>.sslip.io` name if you have no DNS) and open the app there on port 80/443.
+   - **Or publish the port:** Advanced → **Ports Mappings** → `3000:3000`, which makes `http://<server-ip>:3000` work directly.
+
+   Skip both and `http://<server-ip>:3000` is refused (`ERR_CONNECTION_REFUSED`) even though the container is running happily — the port is only open inside Docker.
+3. **Storages → Add volume**: mount a persistent volume at `/data`. Without this, albums disappear on every redeploy — this is the one step people forget. The image's entrypoint fixes ownership of the mount before it drops to the unprivileged user, so a normal bind mount works without a manual `chown`.
 4. **Environment Variables**:
 
    | Key | Value |
@@ -48,10 +52,23 @@ Then open `/admin`, unlock with the password, and drop a folder of photos in.
    | `DATA_DIR` | `/data` |
    | `MAX_FILE_MB` | optional, default `40` |
    | `MAX_FILES` | optional, default `500` — most photos in one upload request |
+   | `PUID` / `PGID` | optional, default `1000` — the uid/gid that should own a bind-mounted `/data` |
 
 5. Deploy, then hit the domain Coolify gives you. `/admin` is where you upload.
 
-The health check hits `/api/albums`, so Coolify will mark the container healthy once it can read the albums folder.
+The health check hits `/api/health`, which answers `200` only when albums can be read **and** written — so a container whose volume is wrong shows up as unhealthy in Coolify instead of green-but-broken.
+
+## Troubleshooting
+
+**`ERR_CONNECTION_REFUSED` on `http://<server-ip>:3000`.** Nothing is listening on that port *on the host*. Coolify routes apps through Traefik by domain and only publishes container ports when you ask it to (see step 2 above). Either open the app on the domain from the resource's **Domains** field, or add a port mapping `3000:3000`. Traefik answering on port 80 is a good sign — the server is up, the app is simply not routed on the bare IP.
+
+**The container is unhealthy or restarting.** Open its logs. `STORAGE NOT WRITABLE` means `/data` is not writable by the app's user: add a volume at `/data` (Storages → Add volume) and set `DATA_DIR=/data`. The entrypoint takes ownership of the mount before dropping privileges, so a plain bind mount normally just works; if the folder is owned by another uid, set `PUID`/`PGID` to match.
+
+**The page loads but says "Storage isn't writable".** The app is running, the volume is not. Same fix. `GET /api/health` returns `503` with the exact path and error, and the app recovers by itself — no restart — once the volume is writable.
+
+**Uploads report "no accepted images".** HEIC/HEIF from an iPhone; see the phone section above.
+
+**Nothing loads on a phone.** The service worker needs https (or localhost). Coolify gives you https on the domain, not on a raw `ip:port`.
 
 ## Install it as an app
 
@@ -118,12 +135,13 @@ The folder name is the slug (URL-safe); the display name lives in `.album.json`.
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| `GET` | `/api/albums` | public | Every album: slug, name, photo count, cover URL |
+| `GET` | `/api/albums` | public | Every album: slug, name, photo count, cover URL — plus `storage: { ok, path, error }` |
 | `GET` | `/api/feed?album=&offset=&limit=&order=shuffle\|recent&seed=` | public | Paged photo feed (all albums when `album` is omitted) |
 | `GET` | `/i/:album/:file` | public | The image itself |
 | `GET` | `/icons/*.png`, `/apple-touch-icon.png` | public | Home-screen icons — drawn and PNG-encoded in-process, never committed as files |
 | `GET` | `/api/session` | public | Whether this browser is logged in |
 | `GET` | `/api/config` | public | Upload limits the upload page needs: `{ maxFileMb, maxFiles }` |
+| `GET` | `/api/health` | public | `200` when albums can be read *and* written; `503` with the path and the error when they cannot |
 | `POST` | `/api/login` | — | `{ "password": "..." }` → sets an HttpOnly cookie (7 days) |
 | `POST` | `/api/logout` | — | Clears the cookie |
 | `POST` | `/api/albums` | password | `{ "name": "Tokyo 2026" }` → creates an empty album |
@@ -159,7 +177,10 @@ public/admin.html    Upload page
 public/admin.js      Password gate, folder/photo upload with progress, album management
 public/styles.css    Dark theme (touch targets, safe-area insets, dynamic viewport units)
 public/manifest.webmanifest   Home-screen install metadata
-public/icons/        Home-screen icons (192 + apple-touch 180)
+public/sw.js         Service worker: caches the shell so the installed app opens offline
+public/pwa.js        Install button, iOS "Add to Home Screen" hint, standalone detection
+lib/icons.js         Home-screen icons, drawn and PNG-encoded at runtime (no binaries in the repo)
+docker-entrypoint.js Makes the mounted volume writable, then drops to the unprivileged user
 Dockerfile           Production image (node:20-alpine, volume at /data)
 docker-compose.yml   Local run
 ```
