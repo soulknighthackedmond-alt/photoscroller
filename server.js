@@ -27,6 +27,7 @@ const SESSION_SECRET =
   crypto.createHash('sha256').update('photoscroller::' + PASSWORD).digest('hex');
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_HOURS || 168) * 3600 * 1000;
 const MAX_FILE_MB = Number(process.env.MAX_FILE_MB || 40);
+const MAX_FILES = Number(process.env.MAX_FILES || 500);
 const COOKIE_NAME = 'ps_session';
 const META_FILE = '.album.json';
 const IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.avif', '.bmp']);
@@ -237,13 +238,25 @@ const upload = multer({
     filename: (_req, file, cb) =>
       cb(null, Date.now().toString(36) + '-' + crypto.randomBytes(6).toString('hex') + (path.extname(file.originalname) || '.jpg')),
   }),
-  limits: { fileSize: MAX_FILE_MB * 1024 * 1024, files: 500 },
-  fileFilter: (_req, file, cb) => cb(null, isImage(file.originalname)),
+  limits: { fileSize: MAX_FILE_MB * 1024 * 1024, files: MAX_FILES },
+  /* multer skips a rejected file silently, so note it: a phone uploading HEIC
+     photos would otherwise just get "fewer photos than you chose" with no reason. */
+  fileFilter: (req, file, cb) => {
+    const ok = isImage(file.originalname);
+    if (!ok) {
+      if (!req.skippedFiles) req.skippedFiles = [];
+      req.skippedFiles.push(String(file.originalname || '').slice(0, 120));
+    }
+    cb(null, ok);
+  },
 });
 
 /* --- auth ---------------------------------------------------------- */
 
 app.get('/api/session', (req, res) => res.json({ authed: isAuthed(req), requiresPassword: true }));
+
+/* what the upload page needs to know before it starts sending bytes */
+app.get('/api/config', (_req, res) => res.json({ maxFileMb: MAX_FILE_MB, maxFiles: MAX_FILES }));
 
 app.post('/api/login', (req, res) => {
   const ip = req.ip || 'unknown';
@@ -349,10 +362,18 @@ app.post('/api/albums', requireAuth, async (req, res, next) => {
   }
 });
 
-app.post('/api/albums/:slug/photos', requireAuth, upload.array('photos', 500), async (req, res, next) => {
+app.post('/api/albums/:slug/photos', requireAuth, upload.array('photos', MAX_FILES), async (req, res, next) => {
   const files = req.files || [];
   try {
-    if (!files.length) return res.status(400).json({ error: 'no images in request' });
+    if (!files.length) {
+      const skipped = req.skippedFiles || [];
+      return res.status(400).json({
+        error: skipped.length
+          ? `no accepted images in that request (${skipped.length} file(s) skipped: ${skipped.slice(0, 3).join(', ')})`
+          : 'no images in request',
+        skipped,
+      });
+    }
     const slug = slugify(req.params.slug);
     const dir = albumPath(slug);
     await fsp.mkdir(dir, { recursive: true });
@@ -377,7 +398,7 @@ app.post('/api/albums/:slug/photos', requireAuth, upload.array('photos', 500), a
       await fsp.rename(file.path, path.join(dir, target));
       saved.push(target);
     }
-    res.json({ album: slug, saved: saved.length, files: saved });
+    res.json({ album: slug, saved: saved.length, files: saved, skipped: req.skippedFiles || [] });
   } catch (err) {
     next(err);
   } finally {
@@ -411,6 +432,11 @@ app.use(
   express.static(path.join(__dirname, 'public'), {
     index: 'index.html',
     maxAge: '1h',
+    /* name the web manifest's type explicitly instead of trusting the mime table:
+       a wrong content type makes browsers ignore the manifest and refuse to install */
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('.webmanifest')) res.setHeader('Content-Type', 'application/manifest+json');
+    },
   })
 );
 
@@ -418,8 +444,12 @@ app.get('/admin', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'ad
 app.get('*', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 app.use((err, _req, res, _next) => {
-  const status = err && err.code === 'LIMIT_FILE_SIZE' ? 413 : 500;
-  if (status === 413) return res.status(413).json({ error: `file too large (max ${MAX_FILE_MB} MB)` });
+  if (err && err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ error: `file too large (max ${MAX_FILE_MB} MB)` });
+  }
+  if (err && (err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE')) {
+    return res.status(400).json({ error: `too many files in one upload (max ${MAX_FILES})` });
+  }
   console.error(err);
   res.status(500).json({ error: 'server error' });
 });
