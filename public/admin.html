@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0b0b0f">
+<title>Upload · Photoscroller</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%236c5ce7'/><circle cx='16' cy='17' r='7' fill='none' stroke='white' stroke-width='2.5'/><rect x='9' y='7' width='8' height='4' rx='1.5' fill='white'/></svg>">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">
+    <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true">
+      <rect width="32" height="32" rx="8" fill="#6c5ce7"></rect>
+      <circle cx="16" cy="17" r="7" fill="none" stroke="#fff" stroke-width="2.5"></circle>
+      <rect x="9" y="7" width="8" height="4" rx="1.5" fill="#fff"></rect>
+    </svg>
+    <span>Photoscroller</span>
+  </a>
+  <nav class="chips"></nav>
+  <div class="topbar-right">
+    <a class="btn small ghost" href="/">View feed</a>
+    <button class="btn small ghost hidden" id="logoutBtn">Log out</button>
+  </div>
+</header>
+
+<main class="page">
+  <h1>Upload</h1>
+  <p class="lead">Pick a folder of photos — the folder name becomes the album. Uploading needs the upload password.</p>
+
+  <!-- login -->
+  <section class="card" id="loginCard">
+    <h2>Password required</h2>
+    <p class="hint">Enter the upload password to add or remove albums.</p>
+    <label class="field"><span>Password</span>
+      <input type="password" id="pw" autocomplete="current-password" placeholder="password">
+    </label>
+    <div class="row"><button class="btn" id="loginBtn">Unlock</button></div>
+    <div class="msg" id="loginMsg"></div>
+  </section>
+
+  <!-- upload -->
+  <section class="card hidden" id="uploadCard">
+    <h2>New album</h2>
+    <p class="hint">Drop a folder anywhere on the box below, or click to choose one. Images only (jpg, png, gif, webp, avif, bmp).</p>
+
+    <label class="field"><span>Album name (defaults to the folder name)</span>
+      <input type="text" id="albumName" placeholder="e.g. Tokyo 2026">
+    </label>
+
+    <div class="dropzone" id="dropzone">
+      <strong>Drop a folder of photos here</strong>
+      <span id="dropInfo">or click to browse for a folder</span>
+    </div>
+    <input type="file" id="folderInput" webkitdirectory directory multiple accept="image/*" class="hidden">
+
+    <div class="row">
+      <button class="btn" id="uploadBtn" disabled>Upload</button>
+      <button class="btn ghost" id="clearBtn" disabled>Clear selection</button>
+    </div>
+    <div class="bar hidden" id="bar"><i></i></div>
+    <div class="msg" id="uploadMsg"></div>
+  </section>
+
+  <!-- manage -->
+  <section class="card hidden" id="manageCard">
+    <h2>Albums</h2>
+    <p class="hint">Everything currently on the server.</p>
+    <ul class="album-list" id="albumList"></ul>
+    <div class="msg" id="manageMsg"></div>
+  </section>
+</main>
+
+<script src="/admin.js"></script>
+</body>
+</html>

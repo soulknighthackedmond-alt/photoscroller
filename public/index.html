@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0b0f">
+<title>Photoscroller</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%236c5ce7'/><circle cx='16' cy='17' r='7' fill='none' stroke='white' stroke-width='2.5'/><rect x='9' y='7' width='8' height='4' rx='1.5' fill='white'/></svg>">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#/">
+    <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true">
+      <rect width="32" height="32" rx="8" fill="#6c5ce7"></rect>
+      <circle cx="16" cy="17" r="7" fill="none" stroke="#fff" stroke-width="2.5"></circle>
+      <rect x="9" y="7" width="8" height="4" rx="1.5" fill="#fff"></rect>
+    </svg>
+    <span>Photoscroller</span>
+  </a>
+
+  <nav class="chips" id="chips" aria-label="Albums">
+    <a class="chip" href="#/" data-route="">Everything</a>
+    <a class="chip" href="#/albums" data-route="albums">Albums</a>
+  </nav>
+
+  <div class="topbar-right">
+    <button class="icon-btn" id="shuffleBtn" title="Reshuffle feed">Shuffle</button>
+    <a class="btn small" href="/admin">Upload</a>
+  </div>
+</header>
+
+<main id="app" class="app">
+  <section id="feedView" class="feed-view hidden">
+    <div id="feed" class="feed" tabindex="0"></div>
+    <div id="feedFooter" class="feed-footer"></div>
+    <div id="feedEmpty" class="empty hidden">
+      <h2>No photos yet</h2>
+      <p>Albums are empty. Open the upload page and drop a folder of images in.</p>
+      <a class="btn" href="/admin">Upload a folder</a>
+    </div>
+  </section>
+
+  <section id="albumsView" class="albums-view hidden">
+    <div class="section-head">
+      <h1>Albums</h1>
+      <p id="albumsSub" class="muted"></p>
+    </div>
+    <div id="albums" class="album-grid"></div>
+  </section>
+</main>
+
+<div id="hud" class="hud hidden"></div>
+
+<div id="zoom" class="zoom hidden">
+  <img id="zoomImg" alt="">
+  <button class="zoom-close" id="zoomClose" aria-label="Close">Close</button>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
