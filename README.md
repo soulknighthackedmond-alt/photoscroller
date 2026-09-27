@@ -6,6 +6,8 @@ A tiny self-hosted photo scroller in the spirit of Scrolller. Drop a **folder** 
 - **Password-gated uploads** — adding or deleting albums needs the upload password (default `admin`).
 - **Folder upload** — drag a folder onto the page (or pick one); the folder name becomes the album name.
 - **Scrolller-style feed** — one image per screen, snap scrolling, arrow-key / `j` `k` / space navigation, click to zoom.
+- **Works on phones** — swipe through the feed, tap a photo to zoom, upload straight from the camera roll, and add it to your home screen as an app.
+- **Uploads that survive a phone signal** — photos go up in batches, and anything the server refuses (HEIC, oversized) is named instead of quietly dropped.
 - **No database** — albums are plain folders under `DATA_DIR/albums/<slug>/`.
 - **One container, no build step** — Node + Express + a static frontend, so it deploys on Coolify (or anywhere Docker runs) in one go.
 
@@ -45,10 +47,36 @@ Then open `/admin`, unlock with the password, and drop a folder of photos in.
    | `SESSION_SECRET` | a long random string, e.g. `openssl rand -hex 32` |
    | `DATA_DIR` | `/data` |
    | `MAX_FILE_MB` | optional, default `40` |
+   | `MAX_FILES` | optional, default `500` — most photos in one upload request |
 
 5. Deploy, then hit the domain Coolify gives you. `/admin` is where you upload.
 
 The health check hits `/api/albums`, so Coolify will mark the container healthy once it can read the albums folder.
+
+## On a phone
+
+The viewer is built for touch rather than shrunk from the desktop layout:
+
+| Gesture | Action |
+| --- | --- |
+| Swipe up / down | next / previous photo (native scroll-snap, one photo per screen) |
+| Tap a photo | zoom in; tap again for full size; swipe down, tap Close, or tap the backdrop to dismiss |
+| Tap an album chip | jump between albums |
+
+Details that matter on a handset:
+
+- **Height** is `100svh`, so a photo always fits while the browser's address bar slides in and out, and everything pinned to an edge respects the notch and home-indicator insets (`env(safe-area-inset-*)`).
+- **Captions stay visible** — there is no hover on a phone, so the album/photo label is shown rather than waiting for a mouse.
+- **Tap targets** are 44px on touch screens, and text fields are 16px so iOS does not zoom the page when the password box is focused.
+- **Rotating the phone re-snaps** to the photo you were on instead of leaving the feed stranded between two images.
+
+Uploading from a phone:
+
+- iOS — and some Android browsers — cannot pick a **folder** (`webkitdirectory` is desktop-only), so the upload page also offers **Choose photos**, straight from the camera roll. The album name then comes from the field, pre-filled as `Photos 27 Sep 2026`.
+- Where folder picking does work (desktop, Android Chrome) both buttons are shown.
+- Photos upload in **batches of 20**. If the connection drops, the batches that made it are saved, the rest stay selected, and pressing Upload again continues from there.
+- Files the server cannot accept are reported rather than silently dropped: oversized ones before the upload starts, wrong-format ones in the server's reply. **HEIC** from an iPhone is the usual case, and the page says what to change (Settings → Camera → Formats → Most Compatible).
+- **Add to home screen** to run it full-screen: Safari → Share → Add to Home Screen, Chrome → ⋮ → Add to Home screen. `manifest.webmanifest` and the icons are included.
 
 ## How it works
 
@@ -72,16 +100,17 @@ The folder name is the slug (URL-safe); the display name lives in `.album.json`.
 | `GET` | `/api/feed?album=&offset=&limit=&order=shuffle\|recent&seed=` | public | Paged photo feed (all albums when `album` is omitted) |
 | `GET` | `/i/:album/:file` | public | The image itself |
 | `GET` | `/api/session` | public | Whether this browser is logged in |
+| `GET` | `/api/config` | public | Upload limits the upload page needs: `{ maxFileMb, maxFiles }` |
 | `POST` | `/api/login` | — | `{ "password": "..." }` → sets an HttpOnly cookie (7 days) |
 | `POST` | `/api/logout` | — | Clears the cookie |
 | `POST` | `/api/albums` | password | `{ "name": "Tokyo 2026" }` → creates an empty album |
-| `POST` | `/api/albums/:slug/photos` | password | multipart: `name` + many `photos` files |
+| `POST` | `/api/albums/:slug/photos` | password | multipart: `name` + many `photos` files → `{ saved, files, skipped }`; `skipped` names the files the server would not accept |
 | `DELETE` | `/api/albums/:slug` | password | Deletes an album and its photos |
 | `DELETE` | `/api/albums/:slug/photos/:file` | password | Deletes one photo |
 
 `order=shuffle` uses a seeded shuffle, so paging through the feed stays stable instead of repeating images.
 
-## Keyboard shortcuts
+## Keyboard shortcuts (desktop)
 
 | Key | Action |
 | --- | --- |
@@ -104,8 +133,10 @@ server.js            Express app: auth, albums, feed, uploads
 public/index.html    Viewer shell (feed + album grid)
 public/app.js        Feed, routing, keyboard nav, zoom
 public/admin.html    Upload page
-public/admin.js      Password gate, folder upload with progress, album management
-public/styles.css    Dark theme
+public/admin.js      Password gate, folder/photo upload with progress, album management
+public/styles.css    Dark theme (touch targets, safe-area insets, dynamic viewport units)
+public/manifest.webmanifest   Home-screen install metadata
+public/icons/        Home-screen icons (192 + apple-touch 180)
 Dockerfile           Production image (node:20-alpine, volume at /data)
 docker-compose.yml   Local run
 ```
