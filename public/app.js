@@ -24,6 +24,9 @@ const state = {
   limit: 12,
   total: 0,
   album: null,
+  /* 'upload' keeps the order the photos were uploaded in; 'shuffle' is the explicit
+     "surprise me" mode. Restored from localStorage on boot. */
+  order: 'upload',
   seed: Math.floor(Math.random() * 1e9),
   loading: false,
   done: false,
@@ -170,9 +173,10 @@ async function loadMore() {
     const params = new URLSearchParams({
       offset: String(state.offset),
       limit: String(state.limit),
-      order: 'shuffle',
-      seed: String(state.seed),
+      order: state.order,
     });
+    /* only a shuffle needs the seed: it keeps paging stable instead of repeating photos */
+    if (state.order === 'shuffle') params.set('seed', String(state.seed));
     if (state.album) params.set('album', state.album);
     const data = await api('/api/feed?' + params.toString());
     state.total = data.total;
@@ -239,7 +243,17 @@ function hydrateImages() {
         for (const entry of entries) {
           if (!entry.isIntersecting) continue;
           const img = entry.target;
-          if (img.dataset.src && !img.src) img.src = img.dataset.src;
+          if (img.dataset.src && !img.src) {
+            img.src = img.dataset.src;
+            /* The letterbox backdrop is the same URL, so it costs no extra request.
+               The path is server-generated (/i/<slug>/<file>) with both parts
+               encodeURIComponent'd, so it cannot break out of the url() token. */
+            const item = img.closest('.item');
+            if (item) {
+              item.style.setProperty('--bg', 'url("' + img.dataset.src + '")');
+              item.classList.add('ready');
+            }
+          }
           imgObserver.unobserve(img);
         }
       },
@@ -339,6 +353,12 @@ document.addEventListener('keydown', (e) => {
   } else if (e.key === 'b' || e.key === 'B') {
     e.preventDefault();
     setBlur(!blurOn());
+  } else if (e.key === 'f' || e.key === 'F') {
+    e.preventDefault();
+    setMode(fillOn() ? 'fit' : 'fill');
+  } else if (e.key === 's' || e.key === 'S') {
+    e.preventDefault();
+    setShuffle(!shuffleOn());
   } else if (e.key === 'o' || e.key === 'Enter') {
     const p = state.photos[currentIndex()];
     if (p) openZoom(p);
@@ -375,10 +395,43 @@ function setBlur(on, save = true) {
 
 $('#blurBtn').addEventListener('click', () => setBlur(!blurOn()));
 
+/* ---------------- fit / fill ----------------
+
+   How much of the screen a photo takes. 'fit' shows all of it, as large as the screen
+   allows — on a portrait phone a 16:9 shot is only ever as wide as the screen, so about
+   a third of its height. 'fill' covers the screen and crops the edges, which is the only
+   way a landscape photo gets bigger on a portrait screen. Remembered across visits. */
+
+const MODE_KEY = 'ps-mode';
+
+const fillOn = () => document.documentElement.classList.contains('fill-mode');
+
+function setMode(mode, save = true) {
+  const fill = mode === 'fill';
+  document.documentElement.classList.toggle('fill-mode', fill);
+  const btn = $('#modeBtn');
+  if (btn) {
+    btn.textContent = fill ? 'Fill' : 'Fit';
+    btn.setAttribute('aria-pressed', fill ? 'true' : 'false');
+    btn.title = fill
+      ? 'Filling the screen, so the edges are cropped — tap for the whole photo'
+      : 'Showing the whole photo — tap to fill the screen';
+  }
+  if (save) {
+    try {
+      localStorage.setItem(MODE_KEY, mode);
+    } catch {
+      /* private mode: the setting just doesn't survive the visit */
+    }
+  }
+}
+
+$('#modeBtn').addEventListener('click', () => setMode(fillOn() ? 'fit' : 'fill'));
+
 /* ---------------- zoom ---------------- */
 
-/* One tap fits the photo to the screen, another tap shows it at full size; the
-   backdrop, the Close button, Esc or a swipe down dismisses it. No tap timers,
+/* One tap fits the photo to the screen, the next fills the screen, the next shows it at
+   100%; the backdrop, the Close button, Esc or a swipe down dismisses it. No tap timers,
    so a tap never has to wait to find out whether a second one is coming. */
 function openZoom(photo) {
   zoomImg.src = photo.url;
@@ -386,21 +439,28 @@ function openZoom(photo) {
   setZoomScale('fit');
   zoomEl.classList.remove('hidden');
   $('#zoomHint').textContent = isTouch
-    ? 'Tap the photo to zoom in · swipe down to close'
-    : 'Click the photo to zoom in · Esc to close';
+    ? 'Tap to fill the screen, tap again for full size · swipe down to close'
+    : 'Click to fill the screen, click again for full size · Esc to close';
 }
 
 function closeZoom() {
   zoomEl.classList.add('hidden');
   zoomEl.classList.remove('actual');
+  zoomEl.classList.remove('screen');
   zoomImg.classList.remove('actual');
   zoomImg.removeAttribute('src');
 }
+
+/* fit → screen → actual. The middle step exists because on a phone 'fit' and the feed
+   are the same size for a landscape photo, so the first tap used to look like nothing
+   had happened. 'screen' covers the screen (cropped), 'actual' is 100% pixels. */
+const ZOOM_STEPS = ['fit', 'screen', 'actual'];
 
 function setZoomScale(mode) {
   const actual = mode === 'actual';
   zoomEl.classList.toggle('actual', actual);
   zoomImg.classList.toggle('actual', actual);
+  zoomEl.classList.toggle('screen', mode === 'screen');
   if (actual) {
     requestAnimationFrame(() => {
       zoomEl.scrollLeft = Math.max(0, (zoomImg.offsetWidth - zoomEl.clientWidth) / 2);
@@ -413,7 +473,12 @@ function setZoomScale(mode) {
 }
 
 zoomImg.addEventListener('click', () => {
-  setZoomScale(zoomEl.classList.contains('actual') ? 'fit' : 'actual');
+  const step = zoomEl.classList.contains('actual')
+    ? 'actual'
+    : zoomEl.classList.contains('screen')
+      ? 'screen'
+      : 'fit';
+  setZoomScale(ZOOM_STEPS[(ZOOM_STEPS.indexOf(step) + 1) % ZOOM_STEPS.length]);
 });
 zoomEl.addEventListener('click', (e) => {
   if (e.target === zoomEl) closeZoom();
@@ -482,17 +547,42 @@ if (window.visualViewport) {
 
 /* ---------------- boot ---------------- */
 
-$('#shuffleBtn').addEventListener('click', () => {
-  state.seed = Math.floor(Math.random() * 1e9);
-  state.album = null;
+const SHUFFLE_KEY = 'ps-shuffle';
+
+const shuffleOn = () => state.order === 'shuffle';
+
+function syncShuffleButton() {
+  const btn = $('#shuffleBtn');
+  if (!btn) return;
+  const on = shuffleOn();
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  btn.title = on ? 'Back to the order the photos were uploaded' : 'Reshuffle the feed';
+}
+
+/* Switching order rebuilds the feed from the top: paging with a different order
+   part-way through would splice two orderings together. */
+function setShuffle(on, save = true) {
+  state.order = on ? 'shuffle' : 'upload';
+  if (on) state.seed = Math.floor(Math.random() * 1e9);
+  syncShuffleButton();
+  if (save) {
+    try {
+      localStorage.setItem(SHUFFLE_KEY, on ? '1' : '0');
+    } catch {
+      /* private mode: the setting just doesn't survive the visit */
+    }
+  }
   state.photos = [];
   feedEl.innerHTML = '';
   state.offset = 0;
   state.total = 0;
   state.done = false;
   state.loading = false;
+  captionIndex = -1;
   startFeed(route().album || null);
-});
+}
+
+$('#shuffleBtn').addEventListener('click', () => setShuffle(!shuffleOn()));
 
 window.addEventListener('hashchange', render);
 
@@ -504,6 +594,17 @@ window.addEventListener('hashchange', render);
   } catch {
     /* private mode: the default is unblurred */
   }
+  try {
+    setMode(localStorage.getItem(MODE_KEY) === 'fill' ? 'fill' : 'fit', false);
+  } catch {
+    /* private mode: the default is "fit" — the whole photo */
+  }
+  try {
+    state.order = localStorage.getItem(SHUFFLE_KEY) === '1' ? 'shuffle' : 'upload';
+  } catch {
+    /* private mode: the default is the order the photos were uploaded in */
+  }
+  syncShuffleButton();
   try {
     const data = await api('/api/albums');
     state.albums = data.albums;
