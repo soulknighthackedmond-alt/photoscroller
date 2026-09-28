@@ -1,7 +1,10 @@
 /* Photoscroller styles.
    Mobile notes:
-   - sizes use 100svh (small viewport height) so a photo always fits while mobile
-     browser chrome slides in and out, with 100vh as the fallback;
+   - the PAGE is the scroller, not a box inside it (rule34.pw scrolls the document
+     too), so iOS Safari collapses its address bar as you swipe and the photos get
+     that height back; the top bar is sticky rather than fixed;
+   - sizes fall back to 100svh (small viewport height) with 100vh behind it, and
+     app.js overwrites both with measured pixel values on the first frame;
    - everything pinned to an edge respects env(safe-area-inset-*) for notches,
      rounded corners and the home indicator;
    - @media (hover: none) / (pointer: coarse) gives 44px tap targets, a caption
@@ -27,26 +30,31 @@
   --topbar-total: calc(var(--topbar) + var(--safe-top, 0px));
 
   /* --screen is the height of one feed screen: app.js overwrites it with the real
-     measured height of the scroll container, so the snap point is exactly one
-     visible screen in every browser. The fallbacks only cover the first paint.
+     measured height of the area below the sticky bar, so the snap point is exactly
+     one visible screen in every browser. The fallbacks only cover the first paint.
      --app-h is the whole visible viewport, used by the zoom overlay (a fixed
      element sizes against the *large* viewport on iOS Safari, which puts the bottom
      of an overlay below the fold). */
-  --screen: 100vh;
+  --screen: calc(100vh - var(--topbar-total));
   --app-h: 100vh;
   --tap: 44px;
 }
 
 @supports (height: 100svh) {
-  :root { --screen: 100svh; --app-h: 100svh; }
+  :root { --screen: calc(100svh - var(--topbar-total)); --app-h: 100svh; }
 }
 
 * { box-sizing: border-box; }
 
+/* The DOCUMENT is the scroller. Nothing here may be pinned to the viewport height:
+   `height: 100%` on html/body turns the page into a box that cannot scroll, and the
+   app then needs an inner scroller — which is what kept iOS Safari's address bar on
+   screen for good and cost every photo a strip of height. */
+html { min-height: 100%; }
+
 html, body {
   margin: 0;
   padding: 0;
-  height: 100%;
   background: var(--bg);
   color: var(--text);
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
@@ -61,9 +69,12 @@ a { color: inherit; text-decoration: none; }
 
 /* ---------- top bar ---------- */
 
+/* sticky, not fixed: the bar belongs to the flow so the page scrolls underneath it,
+   which is what rule34.pw does. A fixed bar on a document-scrolled page would sit on
+   top of the first photo rather than above it. */
 .topbar {
-  position: fixed;
-  inset: 0 0 auto 0;
+  position: sticky;
+  top: 0;
   height: var(--topbar-total);
   display: flex;
   align-items: center;
@@ -160,25 +171,36 @@ a { color: inherit; text-decoration: none; }
 
 /* ---------- feed ---------- */
 
-.app { height: 100%; }
+/* no height: the app is as tall as its content, and the document does the scrolling */
+.app { display: block; }
 
-.feed-view { height: 100%; padding-top: var(--topbar-total); }
+/* no height and no top padding any more: the bar is in the flow above this, so the
+   feed starts below it without being told to */
+.feed-view { position: relative; }
 
+/* Not a scroller any more. This used to be `height: 100%; overflow-y: auto`, which
+   made the page a window inside a window: an inner scroller keeps iOS Safari's
+   address bar on screen for good, so the app never felt like a page and every photo
+   lost a strip of height. The document scrolls now, exactly as rule34.pw's does. */
 .feed {
-  height: 100%;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-  scroll-snap-type: y mandatory;
-  overscroll-behavior-y: contain;
   touch-action: pan-y;
-  scrollbar-width: thin;
-  scrollbar-color: #2c2c3a transparent;
   outline: none;
   -webkit-user-select: none;
   user-select: none;
 }
-.feed::-webkit-scrollbar { width: 8px; }
-.feed::-webkit-scrollbar-thumb { background: #2c2c3a; border-radius: 8px; }
+
+/* Feed mode snaps one photo per screen — on the ROOT scroller, since that is now the
+   only scroller there is. scroll-padding-top pushes the snapport below the sticky
+   bar, so a snapped photo starts under the bar rather than behind it. app.js puts
+   this class on <html> in feed mode only, which is what keeps the grid snap-free. */
+html.snap-feed {
+  scroll-snap-type: y mandatory;
+  scroll-padding-top: var(--topbar-total);
+}
+
+/* while the zoom overlay is open the page behind it must not move: a pinch that
+   slips off the photo would otherwise scroll the document under the overlay */
+html.zoom-open, html.zoom-open body { overflow: hidden; }
 
 /* ---------- masonry grid (the default view) ----------
 
@@ -199,9 +221,8 @@ a { color: inherit; text-decoration: none; }
   align-items: flex-start;
   gap: 8px;
   padding: 8px;
-  /* the rule that makes this a scroller rather than a slideshow */
-  scroll-snap-type: none;
-  scroll-padding: 0;
+  /* no snap of any kind here: the root only snaps in feed mode (html.snap-feed), so
+     a flick of the thumb crosses a screenful instead of being pulled to a stop */
 }
 
 .gcol {
@@ -248,10 +269,11 @@ a { color: inherit; text-decoration: none; }
 html.grid-mode #modeBtn { display: none; }
 
 /* One photo per screen. The height is a single measured number (--screen), never a
-   viewport unit mixed with a percentage chain: iOS Safari resolves 100svh and the
-   html/body height:100% chain against different boxes, which used to make every item
-   taller than the area showing it — a sliver of the next photo, a clipped bottom edge
-   and jittery mandatory snapping. */
+   viewport unit: iOS Safari resolves 100svh and the visible viewport against
+   different boxes, which used to make every item taller than the area showing it — a
+   sliver of the next photo, a clipped bottom edge and jittery mandatory snapping.
+   It is the visible height minus the sticky bar, which is exactly the snapport
+   (html.snap-feed's scroll-padding-top), so a snapped photo fills the screen. */
 .item {
   position: relative;
   height: var(--screen);
@@ -353,14 +375,13 @@ html.fill-mode .item > img { object-fit: cover; }
 
 /* ---------- album grid ---------- */
 
+/* the page scrolls, so this is a plain block: no height, no inner scroller, and no
+   padding for the bar (the bar is in the flow above it) */
 .albums-view {
-  padding: calc(var(--topbar-total) + 22px) calc(20px + var(--safe-right, 0px))
+  padding: 22px calc(20px + var(--safe-right, 0px))
            calc(60px + var(--safe-bottom, 0px)) calc(20px + var(--safe-left, 0px));
   max-width: 1200px;
   margin: 0 auto;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-  height: 100%;
 }
 
 .section-head h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: -.02em; }
@@ -400,8 +421,10 @@ html.fill-mode .item > img { object-fit: cover; }
 
 /* ---------- misc ---------- */
 
+/* fixed, not absolute: on a document-scrolled page an absolutely positioned box
+   inside a content-height wrapper would sit in the flow instead of centred */
 .empty {
-  position: absolute;
+  position: fixed;
   inset: var(--topbar-total) 0 0 0;
   display: flex;
   flex-direction: column;
@@ -526,7 +549,8 @@ html.fill-mode .item > img { object-fit: cover; }
 /* ---------- admin ---------- */
 
 .page {
-  padding: calc(var(--topbar-total) + 26px) calc(20px + var(--safe-right, 0px))
+  /* the bar is in the flow above this now, so it needs no padding of its own */
+  padding: 26px calc(20px + var(--safe-right, 0px))
            calc(60px + var(--safe-bottom, 0px)) calc(20px + var(--safe-left, 0px));
   max-width: 880px;
   margin: 0 auto;
@@ -765,6 +789,6 @@ input:focus { outline: 2px solid rgba(108, 92, 231, .55); outline-offset: 0; bor
 
 @media (prefers-reduced-motion: reduce) {
   .item img, .tile img, .album-card, .btn, .bar > i, .item .meta, .blur-thumbs .item img, .blur-thumbs .tile img { transition: none; }
-  .feed { scroll-behavior: auto; }
+  html { scroll-behavior: auto; }
   .a2hs { animation: none; }
 }

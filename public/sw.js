@@ -17,7 +17,7 @@
 
    Bump CACHE when the shell list changes; activate() drops the old one. */
 
-const CACHE = 'photoscroller-shell-v3';
+const CACHE = 'photoscroller-shell-v4';
 const SHELL = ['/', '/styles.css', '/app.js', '/zoommath.js', '/admin.js', '/pwa.js', '/manifest.webmanifest', '/icons/icon-192.png'];
 
 self.addEventListener('install', (event) => {

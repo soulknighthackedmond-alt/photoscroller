@@ -2,11 +2,12 @@
 
 /* Photoscroller viewer: endless vertical feed + album list.
 
-   Mobile: the feed is driven by the browser's own scroll-snap — a swipe IS a
-   scroll — so there are no custom swipe handlers to fight the browser. What a
-   phone does need, and what this file adds: a touch-aware HUD hint, a caption
-   that stays visible without hover (CSS), tap-to-zoom with swipe-down-to-close,
-   and a re-snap to the same photo after rotating or resizing the screen. */
+   Mobile: the PAGE is the scroller and the feed is driven by the browser's own
+   scroll-snap — a swipe IS a scroll — so there are no custom swipe handlers to fight
+   the browser, and iOS Safari collapses its address bar as you swipe, the way it does
+   on rule34.pw. What a phone does need, and what this file adds: a touch-aware HUD
+   hint, a caption that stays visible without hover (CSS), tap-to-zoom with
+   swipe-down-to-close, and a re-snap to the same photo after rotating or resizing. */
 
 const isTouch =
   (typeof window.matchMedia === 'function' &&
@@ -37,6 +38,44 @@ const state = {
 
 const $ = (sel) => document.querySelector(sel);
 const feedEl = $('#feed');
+
+/* ---------------- the scroller ----------------
+
+   The PAGE scrolls, not a box inside it. The feed used to be its own scroller
+   (`height: 100%; overflow-y: auto`), which makes the app a window inside a window:
+   iOS Safari keeps its address bar on screen for an inner scroller, so the app never
+   felt like a page and every photo lost a strip of height. The document scrolls now,
+   exactly as rule34.pw's does, so every read and write of the scroll position goes
+   through the five helpers below — nothing else in this file touches scrollTop. */
+
+const topbarEl = document.querySelector('.topbar');
+
+const scrollYNow = () => window.scrollY || document.documentElement.scrollTop || 0;
+const viewportH = () => document.documentElement.clientHeight || window.innerHeight || 0;
+const pageH = () => document.documentElement.scrollHeight;
+
+function scrollToY(y, smooth = false) {
+  const top = Math.max(0, Math.round(y));
+  if (smooth) window.scrollTo({ top, behavior: 'smooth' });
+  else window.scrollTo(0, top);
+}
+const scrollToTop = (smooth = false) => scrollToY(0, smooth);
+
+/* One photo per screen in feed mode is a measured number: the visible height minus
+   the sticky bar. That is also exactly what the snapport is (html.snap-feed's
+   scroll-padding-top), so a snapped photo fills the screen instead of sitting under
+   the bar or leaving a sliver of the next one. */
+function screenH() {
+  const bar = topbarEl ? topbarEl.offsetHeight : 0;
+  return Math.max(120, viewportH() - bar);
+}
+
+/* Snapping belongs to the root scroller now, and only in feed mode: the grid must
+   never snap, or a flick of the thumb gets pulled to a stop at every tile. */
+function syncSnap(r = route()) {
+  const on = r.view === 'feed' && !gridMode();
+  document.documentElement.classList.toggle('snap-feed', on);
+}
 const chipsEl = $('#chips');
 const hudEl = $('#hud');
 const zoomEl = $('#zoom');
@@ -99,6 +138,11 @@ async function render() {
   const r = route();
   const albumsView = $('#albumsView');
   const feedView = $('#feedView');
+
+  /* The two views are pages of one document now, so a view change starts at the top:
+     without this the album list would open part-way down the feed that was just left. */
+  scrollToTop();
+  syncSnap(r);
 
   if (r.view === 'albums') {
     feedView.classList.add('hidden');
@@ -165,7 +209,7 @@ async function startFeed(album) {
   /* "already showing" is state.photos, not feedEl.children: in grid mode the columns
      are children even when they hold nothing, so an empty album would never load */
   if (state.album === album && state.photos.length) {
-    feedEl.scrollTop = 0;
+    scrollToTop();
     updateHud();
     return;
   }
@@ -176,7 +220,7 @@ async function startFeed(album) {
   state.done = false;
   state.loading = false;
   feedEl.innerHTML = '';
-  feedEl.scrollTop = 0;
+  scrollToTop();
   captionIndex = -1;
   if (gridMode()) buildColumns(true);
   await loadMore();
@@ -375,6 +419,7 @@ function applyLayout(mode, save = true) {
   document.documentElement.classList.toggle('grid-mode', want);
   feedEl.classList.toggle('grid', want);
   state.layout = want ? 'grid' : 'feed';
+  syncSnap();
   if (layoutBtn) {
     layoutBtn.textContent = want ? 'Grid' : 'Feed';
     layoutBtn.setAttribute('aria-pressed', want ? 'true' : 'false');
@@ -433,7 +478,8 @@ function hydrateImages() {
           imgObserver.unobserve(img);
         }
       },
-      { root: feedEl, rootMargin: '150% 0px' }
+      /* root: null is the viewport, which is the only scroller there is now */
+      { root: null, rootMargin: '150% 0px' }
     );
   }
   feedEl.querySelectorAll('img[data-src]').forEach((img) => {
@@ -447,14 +493,17 @@ const albumName = (slug) => (state.albums.find((a) => a.slug === slug) || { name
 /* prefetch the next page before the user reaches the bottom.
    Throttled to one layout read per frame — a phone fires scroll at 60fps. */
 let scrollQueued = false;
-feedEl.addEventListener(
+window.addEventListener(
   'scroll',
   () => {
+    /* the album list is a different page of the same document: its scroll must not
+       drive the feed */
+    if (route().view !== 'feed') return;
     if (scrollQueued) return;
     scrollQueued = true;
     requestAnimationFrame(() => {
       scrollQueued = false;
-      if (feedEl.scrollTop + feedEl.clientHeight * 2.2 >= feedEl.scrollHeight) loadMore();
+      if (scrollYNow() + viewportH() * 2.2 >= pageH()) loadMore();
       updateHud();
       refreshCaption();
     });
@@ -495,19 +544,21 @@ function refreshCaption() {
 
 function currentIndex() {
   const first = feedEl.querySelector('.item');
-  const h = (first && first.offsetHeight) || feedEl.clientHeight || 1;
-  return Math.round(feedEl.scrollTop / h);
+  const h = (first && first.offsetHeight) || screenH() || 1;
+  /* Photo i snaps at y = i * height: the snapport starts one bar below the top of the
+     viewport and so does the first photo, so the two cancel out and this division is
+     exact rather than approximate. */
+  return Math.round(scrollYNow() / h);
 }
 
-/* Snapping by index rather than scrollIntoView keeps the scroll container the
-   feed itself — on iOS scrollIntoView can walk up and move the page instead. */
+/* Snapping by index rather than scrollIntoView keeps the landing position an exact
+   multiple of the photo height — on iOS scrollIntoView can walk up and move the page
+   in ways this file cannot see. */
 function scrollToIndex(i, smooth = true) {
   const items = feedEl.querySelectorAll('.item');
   if (!items.length) return;
   const target = Math.max(0, Math.min(i, items.length - 1));
-  const top = target * items[0].offsetHeight;
-  if (smooth) feedEl.scrollTo({ top, behavior: 'smooth' });
-  else feedEl.scrollTop = top;
+  scrollToY(target * items[0].offsetHeight, smooth);
 }
 
 document.addEventListener('keydown', (e) => {
@@ -726,7 +777,19 @@ function refitZoom() {
   applyZoom();
 }
 
+/* The overlay covers the page, but a pinch that slips off the photo would still
+   scroll the document behind it, so the root is locked while it is open. */
+let lockedY = 0;
+function lockScroll(on) {
+  if (on) lockedY = scrollYNow();
+  document.documentElement.classList.toggle('zoom-open', on);
+  /* a browser that drops the scroll position when the root stops scrolling gets it
+     back here, so closing the overlay never lands you somewhere else */
+  if (!on && Math.abs(scrollYNow() - lockedY) > 1) scrollToY(lockedY);
+}
+
 function openZoom(photo) {
+  lockScroll(true);
   /* un-hide before measuring: a display:none overlay has no client size */
   zoomEl.classList.remove('hidden');
   zoomImg.style.transform = '';
@@ -745,6 +808,7 @@ function openZoom(photo) {
 
 function closeZoom() {
   zoomEl.classList.add('hidden');
+  lockScroll(false);
   zoomImg.style.transform = '';
   zoomImg.style.width = '';
   zoomImg.style.height = '';
@@ -903,16 +967,17 @@ zoomEl.addEventListener('click', (e) => {
 
 /* ---------------- screen height / rotation ---------------- */
 
-/* One number decides how tall a photo's screen is: the measured height of the scroll
-   container. iOS Safari resolves 100svh and the html/body height:100% chain against
-   different boxes, which made every item slightly taller than the area showing it —
-   a sliver of the next photo, a clipped bottom edge and jittery mandatory snapping. */
+/* One number decides how tall a photo's screen is: the measured visible height minus
+   the measured height of the sticky bar. iOS Safari resolves 100svh and the visible
+   viewport against different boxes, which made every item slightly taller than the
+   area showing it — a sliver of the next photo, a clipped bottom edge and jittery
+   mandatory snapping. */
 function syncScreen() {
   const root = document.documentElement;
-  const appH = root.clientHeight || window.innerHeight || 0;
+  const appH = viewportH();
   if (appH) root.style.setProperty('--app-h', appH + 'px');
-  const feedH = feedEl.clientHeight;
-  if (feedH) root.style.setProperty('--screen', feedH + 'px');
+  const screen = screenH();
+  if (appH) root.style.setProperty('--screen', screen + 'px');
 }
 
 /* Rotating the phone, or the URL bar growing and shrinking, changes that height, so
@@ -930,9 +995,9 @@ function resnap() {
     /* a rotation changes how many columns fit, so every photo is placed again — and the
        scroll offset is carried over, so you stay roughly where you were */
     if (grid.cols.length !== gridColumnCount()) {
-      const keep = feedEl.scrollTop;
+      const keep = scrollYNow();
       relayoutGrid();
-      feedEl.scrollTop = keep;
+      scrollToY(keep);
     }
     updateHud();
     return;
@@ -1051,4 +1116,5 @@ $('#logoutBtn').addEventListener('click', async () => {
   }
   await render();
   syncScreen();
+  syncSnap();
 })();
