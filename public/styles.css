@@ -117,7 +117,8 @@ a { color: inherit; text-decoration: none; }
 }
 .chip .n { opacity: .65; font-size: 11px; margin-left: 5px; }
 
-.topbar-right { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.topbar-right { display: flex; align-items: center; gap: 8px; flex: 0 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.topbar-right::-webkit-scrollbar { display: none; }
 
 .btn {
   display: inline-block;
@@ -178,6 +179,66 @@ a { color: inherit; text-decoration: none; }
 }
 .feed::-webkit-scrollbar { width: 8px; }
 .feed::-webkit-scrollbar-thumb { background: #2c2c3a; border-radius: 8px; }
+
+/* ---------- masonry grid (the default view) ----------
+
+   Scrolller / rule34-scroller style: thumbnails packed into columns, endless, and — the
+   whole point of the mode — no snapping. A flick of the thumb crosses a screenful at a
+   time instead of being pulled to a stop at every photo.
+
+   app.js puts each photo into whichever column is currently shortest, which is what
+   keeps the bottom edge even. CSS `columns` cannot do this: it reflows the entire set
+   every time a page is appended, which throws the scroll position away. */
+
+.feed.grid {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px;
+  /* the rule that makes this a scroller rather than a slideshow */
+  scroll-snap-type: none;
+  scroll-padding: 0;
+}
+
+.gcol {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tile {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-3);
+  cursor: zoom-in;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  /* aspect-ratio is set inline from the file header (lib/dims.js), so the space is
+     reserved before the photo arrives and the columns never jump */
+}
+
+.tile img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity .25s ease;
+  -webkit-user-drag: none;
+  -webkit-touch-callout: none;
+}
+.tile.loaded img { opacity: 1; }
+.tile:active { transform: scale(.985); }
+
+/* Fit/Fill is a feed-mode choice: a grid thumbnail is always the whole photo */
+html.grid-mode #modeBtn { display: none; }
 
 /* One photo per screen. The height is a single measured number (--screen), never a
    viewport unit mixed with a percentage chain: iOS Safari resolves 100svh and the
@@ -598,6 +659,11 @@ input:focus { outline: 2px solid rgba(108, 92, 231, .55); outline-offset: 0; bor
   .dropzone { padding: 34px 18px; }
   .dropzone strong { font-size: 16px; }
 
+  /* the grid goes edge to edge as well: a gutter costs pixels on every single photo */
+  .feed.grid { gap: 4px; padding: 4px; }
+  .gcol { gap: 4px; }
+  .tile { border-radius: 4px; }
+
   .btn, .icon-btn, .chip, .dropzone, .album-card, .zoom-close { -webkit-tap-highlight-color: transparent; }
 }
 
@@ -657,6 +723,7 @@ input:focus { outline: 2px solid rgba(108, 92, 231, .55); outline-offset: 0; bor
    zoom overlay, so nothing is revealed by accident.
    The slight scale hides the soft edge a blur leaves inside its own box. */
 .blur-thumbs .item img,
+.blur-thumbs .tile img,
 .blur-thumbs .album-card .thumb {
   filter: blur(18px);
   transform: scale(1.06);
@@ -665,7 +732,8 @@ input:focus { outline: 2px solid rgba(108, 92, 231, .55); outline-offset: 0; bor
 .blur-thumbs .item img {
   transition: opacity .35s ease, filter .25s ease, transform .25s ease;
 }
-.blur-thumbs .item.revealed img { filter: none; transform: none; }
+.blur-thumbs .item.revealed img,
+.blur-thumbs .tile.revealed img { filter: none; transform: none; }
 
 /* a privacy screen shouldn't leave a large blurred echo of the photo behind it */
 .blur-thumbs .item:not(.revealed)::before { opacity: 0; }
@@ -690,7 +758,7 @@ input:focus { outline: 2px solid rgba(108, 92, 231, .55); outline-offset: 0; bor
 /* ---------- users who ask for less motion ---------- */
 
 @media (prefers-reduced-motion: reduce) {
-  .item img, .album-card, .btn, .bar > i, .item .meta, .blur-thumbs .item img { transition: none; }
+  .item img, .tile img, .album-card, .btn, .bar > i, .item .meta, .blur-thumbs .item img, .blur-thumbs .tile img { transition: none; }
   .feed { scroll-behavior: auto; }
   .a2hs { animation: none; }
 }

@@ -1,14 +1,16 @@
 # Photoscroller
 
-A tiny self-hosted photo scroller in the spirit of Scrolller. Drop a **folder** of images in, it becomes an **album**, and every album is listed for anyone to open in an endless vertical feed.
+A tiny self-hosted photo scroller in the spirit of Scrolller. Drop a **folder** of images in, it becomes an **album**, and every album is listed in a masonry grid you scroll endlessly — the rule34-scroller / Scrolller feel.
 
-- **Public browsing** — anyone with the link can scroll the feed and open albums.
-- **Opens on the album list** — a bare address, a reload and the installed app all land on **Albums**; the mixed **Everything** feed is one chip away.
-- **Password-gated uploads** — adding or deleting albums needs the upload password (default `admin`).
+- **Everything is behind one password** — the pages, the API and the photos themselves (default `changeme`). Uploading and deleting use the same password, so there is one secret to change.
+- **Opens on the album list** — a bare address, a reload and the installed app all land on **Albums**; the mixed **Everything** grid is one chip away.
+- **Masonry grid, endless scroll** — the default view packs thumbnails into columns and never snaps, so a flick of the thumb crosses a screenful at a time. Tap any photo to open it full screen.
+- **One photo per screen when you want it** — **Feed** in the top bar is the snap-scrolling viewer: one image per screen, arrow-key / `j` `k` / space navigation, pinch or double-tap to zoom.
+- **Accurate zoom** — pinch, double-tap, drag and wheel zoom about the exact point under your fingers, on a photo laid out at its real pixel size.
 - **Folder upload** — drag a folder onto the page (or pick one); the folder name becomes the album name.
-- **Scrolller-style feed** — one image per screen, snap scrolling, arrow-key / `j` `k` / space navigation, pinch or double-tap to zoom.
-- **In the order you uploaded them** — the feed runs through albums and photos in the order they arrived, not by filename or mtime. **Shuffle** is one tap away when you want it.
-- **Fill by default, fit on demand** — the feed fills the screen so a landscape shot is as big as the phone allows; tap **Fit** to see the whole photo, letterbox filled by its own blurred colours.
+- **In the order you uploaded them** — albums and photos run in the order they arrived, not by filename or mtime. **Shuffle** is one tap away when you want it.
+- **Fill by default, fit on demand** — in Feed mode the photo fills the screen so a landscape shot is as big as the phone allows; tap **Fit** to see the whole photo, letterbox filled by its own blurred colours.
+- **Blur mode** — one tap hides every thumbnail, feed photo and album cover; tap a photo to reveal that one.
 - **Installs as an app** — add it to a phone's home screen and it opens full screen with its own icon, and keeps working when the signal drops.
 - **Uploads that survive a phone signal** — photos go up in batches, and anything the server refuses (HEIC, oversized) is named instead of quietly dropped.
 - **No database** — albums are plain folders under `DATA_DIR/albums/<slug>/`.
@@ -29,11 +31,11 @@ docker compose up --build
 
 ```bash
 npm install
-UPLOAD_PASSWORD=admin npm start
+APP_PASSWORD=changeme npm start
 # → http://localhost:3000
 ```
 
-Then open `/admin`, unlock with the password, and drop a folder of photos in.
+The app asks for the password first; then open `/admin` and drop a folder of photos in.
 
 ## Deploying on Coolify
 
@@ -50,9 +52,10 @@ Then open `/admin`, unlock with the password, and drop a folder of photos in.
 
    | Key | Value |
    | --- | --- |
-   | `UPLOAD_PASSWORD` | your password — **change it from `admin`** |
+   | `APP_PASSWORD` | your password — **change it from `changeme`**. Gates the pages, the API and the photos. `UPLOAD_PASSWORD` is still read as a fallback, so an existing deployment keeps working |
    | `SESSION_SECRET` | a long random string, e.g. `openssl rand -hex 32` |
    | `DATA_DIR` | `/data` |
+   | `SESSION_TTL_HOURS` | optional, default `720` (30 days) — how long a login lasts |
    | `MAX_FILE_MB` | optional, default `40` |
    | `MAX_FILES` | optional, default `500` — most photos in one upload request |
    | `PUID` / `PGID` | optional, default `1000` — the uid/gid that should own a bind-mounted `/data` |
@@ -94,6 +97,18 @@ Worth knowing:
 - The icons are **drawn in code and encoded to PNG at runtime** (`lib/icons.js`, served from `/icons/*.png`) so the repo carries no binary blobs. `GET /apple-touch-icon.png` answers too, because that is the path iOS probes when it builds the icon.
 - The service worker is **network-first** and never touches `/api/` or `/i/`: a redeploy is picked up on the next load, and the feed and uploads always go to the server. It needs https (or localhost) — on a plain-http origin the browser skips it and everything else still works.
 - `sw.js`, the HTML, the CSS and the JS are served `no-cache`, so a redeploy can never be stuck behind a cached copy on a phone; photos keep their one-year immutable cache.
+
+## The grid (the default view)
+
+The default view is a masonry wall of thumbnails — the Scrolller / rule34-scroller feel — and it is a different thing from the feed, not a restyled one:
+
+- **No snapping.** A flick of the thumb crosses a screenful at a time instead of being pulled to a stop at every photo. **Feed** in the top bar (or `g`) switches to one photo per screen.
+- **Columns by width** — two on a phone, up to six on a wide screen, so a thumbnail stays a thumbnail.
+- **Each photo goes into the shortest column**, which is what keeps the bottom edge even. CSS `columns` cannot do this: it reflows the whole set every time a page is appended, and throws the scroll position away with it.
+- **The space is reserved before the photo arrives.** Each photo's width and height are read from its own file header (`lib/dims.js`) and sent with the feed, so a tile has the right shape before a byte of image lands and the columns never jump under your thumb. That read is a few hundred bytes, cached per file, and a photo whose header cannot be read simply corrects itself when it loads.
+- **Endless scroll** — 40 photos per request, fetched as you approach the bottom.
+- **Tap a photo** to open it full screen with the accurate zoom; tap a blurred one to reveal it first.
+- Rotating the phone changes how many columns fit, so the photos are placed again from the list already in memory — nothing is refetched, and the scroll offset is kept.
 
 ## On a phone
 
@@ -167,19 +182,22 @@ still staged at boot is an orphan from a container killed mid-upload, and is swe
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| `GET` | `/api/albums` | public | Every album: slug, name, photo count, cover URL — plus `storage: { ok, path, error }` |
-| `GET` | `/api/feed?album=&offset=&limit=&order=upload\|shuffle\|recent&seed=` | public | Paged photo feed (all albums when `album` is omitted) |
-| `GET` | `/i/:album/:file` | public | The image itself |
-| `GET` | `/icons/*.png`, `/apple-touch-icon.png` | public | Home-screen icons — drawn and PNG-encoded in-process, never committed as files |
-| `GET` | `/api/session` | public | Whether this browser is logged in |
-| `GET` | `/api/config` | public | Upload limits the upload page needs: `{ maxFileMb, maxFiles }` |
-| `GET` | `/api/health` | public | `200` when albums can be read *and* written; `503` with the path and the error when they cannot |
-| `POST` | `/api/login` | — | `{ "password": "..." }` → sets an HttpOnly cookie (7 days) |
-| `POST` | `/api/logout` | — | Clears the cookie |
+| `GET` | `/login` | open | The password form — the only page served without a session |
+| `POST` | `/api/login` | open | `{ "password": "..." }` → sets an HttpOnly cookie (30 days) |
+| `POST` | `/api/logout` | open | Clears the cookie |
+| `GET` | `/api/session` | open | Whether this browser is logged in |
+| `GET` | `/api/health` | open | `200` when albums can be read *and* written; `503` with the path and the error when they cannot |
+| `GET` | `/icons/*.png`, `/apple-touch-icon.png` | open | Home-screen icons — drawn and PNG-encoded in-process, never committed as files |
+| `GET` | `/api/albums` | password | Every album: slug, name, photo count, cover URL — plus `storage: { ok, path, error }` |
+| `GET` | `/api/feed?album=&offset=&limit=&order=upload\|shuffle\|recent&seed=` | password | Paged photo feed (all albums when `album` is omitted); each photo carries `w`/`h` read from its file header |
+| `GET` | `/i/:album/:file` | password | The image itself |
+| `GET` | `/api/config` | password | Upload limits the upload page needs: `{ maxFileMb, maxFiles }` |
 | `POST` | `/api/albums` | password | `{ "name": "Tokyo 2026" }` → creates an empty album |
 | `POST` | `/api/albums/:slug/photos` | password | multipart: `name` + many `photos` files → `{ saved, files, skipped }`; `skipped` names the files the server would not accept |
 | `DELETE` | `/api/albums/:slug` | password | Deletes an album and its photos |
 | `DELETE` | `/api/albums/:slug/photos/:file` | password | Deletes one photo |
+
+Everything except those first six rows needs the session cookie. Without one, a page request is redirected to `/login?next=<where you were>` and an API call or an image gets a plain `401` — a redirect would be followed and then answered with HTML where JSON or a picture was expected.
 
 `order=upload` is the default: albums oldest first, and inside each album the order the photos were uploaded in. `order=shuffle` uses a seeded shuffle, so paging through the feed stays stable instead of repeating images; `order=recent` sorts newest-first.
 
@@ -194,29 +212,35 @@ still staged at boot is an orphan from a container killed mid-upload, and is swe
 | `+` / `-` | zoom in / out about the middle of the screen (or scroll, or ctrl+scroll for a trackpad pinch) |
 | `0` | back to the whole photo |
 | `b` | blur / unblur every thumbnail |
-| `f` | fit / fill the screen |
+| `f` | fit / fill the screen (Feed mode) |
+| `g` | grid / feed |
 | `s` | shuffle / back to uploaded order |
+
+In the grid the arrow keys, space and the wheel are the browser's own — hijacking them would make a scroller that cannot be scrolled — so only the toggles above are bound.
 
 ## Security notes
 
-- The upload password is compared in constant time; 10 failed attempts from one IP locks logins for 10 minutes.
+- The password is compared in constant time; 10 failed attempts from one IP locks logins for 10 minutes.
 - Uploads are restricted to image extensions (`.jpg .jpeg .png .gif .webp .avif .bmp` — no SVG, since it can carry script), filenames are sanitised, and photo paths are resolved with `path.basename` so `../` traversal can't escape an album folder.
 - Login is an HMAC-signed HttpOnly cookie, not a session store, so the container stays stateless.
-- **Change the default password.** It is only `admin` because that's the documented default; leaving it set on a public host means anyone can upload.
+- **Change the default password.** It is only `changeme` because that is the documented default, and the server logs a warning at every boot while it is still set. On a host anyone can reach, leaving it means anyone can read every photo and upload more.
+- It is one password on a cookie, not user accounts: whoever has it sees everything, and there is no way to grant someone read-only access.
 
 ## Files
 
 ```
-server.js            Express app: auth, albums, feed, uploads
-public/index.html    Viewer shell (feed + album grid)
-public/app.js        Feed, routing, keyboard nav, zoom gestures
+server.js            Express app: password gate, albums, feed, uploads
+public/index.html    Viewer shell (grid + feed + album list)
+public/app.js        Grid, feed, routing, keyboard nav, zoom gestures
 public/zoommath.js   The zoom arithmetic (no DOM, so it can be tested)
+public/login.html    The password form — self-contained, served before anyone has a session
 public/admin.html    Upload page
-public/admin.js      Password gate, folder/photo upload with progress, album management
-public/styles.css    Dark theme (touch targets, safe-area insets, dynamic viewport units)
+public/admin.js      Upload with progress, album management
+public/styles.css    Dark theme (masonry grid, touch targets, safe-area insets)
 public/manifest.webmanifest   Home-screen install metadata
 public/sw.js         Service worker: caches the shell so the installed app opens offline
 public/pwa.js        Install button, iOS "Add to Home Screen" hint, standalone detection
+lib/dims.js          Photo width/height read from the file header, so the grid can reserve space
 lib/icons.js         Home-screen icons, drawn and PNG-encoded at runtime (no binaries in the repo)
 docker-entrypoint.js Makes the mounted volume writable, then drops to the unprivileged user
 Dockerfile           Production image (node:20-alpine, volume at /data)

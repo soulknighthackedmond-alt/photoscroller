@@ -3,8 +3,9 @@
 /**
  * Photoscroller — a self-hosted, Scrolller-style photo feed.
  *
- * Public:   browse albums and scroll the feed.
- * Private:  uploading / deleting requires the upload password (default "admin").
+ * Everything is behind one password (APP_PASSWORD, default "changeme"): the pages, the
+ * API and the photos themselves. Uploading and deleting use that same password, so
+ * there is one secret to change rather than two.
  *
  * Storage is plain folders on disk:  <DATA_DIR>/albums/<album-slug>/*.jpg
  * Point DATA_DIR at a mounted volume so albums survive redeploys.
@@ -21,11 +22,17 @@ const path = require('path');
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
 const ALBUMS_DIR = path.join(DATA_DIR, 'albums');
-const PASSWORD = String(process.env.UPLOAD_PASSWORD || 'admin');
+/* One password for the whole app — viewing, uploading and deleting. APP_PASSWORD is the
+   name to set; UPLOAD_PASSWORD is still read so an existing deployment keeps working. */
+const PASSWORD = String(process.env.APP_PASSWORD || process.env.UPLOAD_PASSWORD || 'changeme');
+/* the two values that mean "a password has not been chosen yet" */
+const DEFAULT_PASSWORDS = new Set(['changeme', 'admin']);
 const SESSION_SECRET =
   process.env.SESSION_SECRET ||
   crypto.createHash('sha256').update('photoscroller::' + PASSWORD).digest('hex');
-const SESSION_TTL_MS = Number(process.env.SESSION_TTL_HOURS || 168) * 3600 * 1000;
+/* 30 days: an installed app that asks for the password again every week is a nuisance,
+   and the cookie is HttpOnly, signed and revocable by changing the secret. */
+const SESSION_TTL_MS = Number(process.env.SESSION_TTL_HOURS || 720) * 3600 * 1000;
 const MAX_FILE_MB = Number(process.env.MAX_FILE_MB || 40);
 const MAX_FILES = Number(process.env.MAX_FILES || 500);
 const COOKIE_NAME = 'ps_session';
@@ -37,6 +44,9 @@ const isImage = (name) => IMAGE_EXT.has(path.extname(name).toLowerCase());
 /* the home-screen icons are drawn and PNG-encoded in-process (lib/icons.js) rather
    than committed as binaries, so there is one reviewable source for every size */
 const ICONS = require('./lib/icons');
+
+/* photo dimensions, read from the file header (lib/dims.js) */
+const DIMS = require('./lib/dims');
 
 /* ------------------------------------------------------------------ *
  * storage helpers
@@ -221,6 +231,23 @@ async function listAlbums() {
   return albums;
 }
 
+/* Every photo in a feed page carries its own aspect ratio, read from the file header
+   (lib/dims.js). The masonry grid needs it before the image arrives: without it the
+   columns reflow as pictures load and the page jumps under your thumb. */
+async function withDims(photos) {
+  return Promise.all(
+    photos.map(async (photo) => {
+      try {
+        const key = `${photo.album}/${photo.name}|${photo.mtime}|${photo.size}`;
+        const d = await DIMS.dims(photoPath(photo.album, photo.name), key);
+        return d ? { ...photo, w: d.w, h: d.h } : photo;
+      } catch {
+        return photo;
+      }
+    })
+  );
+}
+
 async function uniqueFileName(dir, original) {
   const parsed = path.parse(path.basename(original));
   const safeBase =
@@ -314,6 +341,41 @@ function requireAuth(req, res, next) {
 const app = express();
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '64kb' }));
+
+/* --- the password gate -------------------------------------------------
+   Everything below this line needs the session cookie: the pages, the API and the
+   photos themselves. Only the login flow, the health probe and the icons are open —
+   the health probe because Coolify's health check cannot log in, the icons because a
+   home-screen icon is fetched before anyone has a session. */
+const PUBLIC_PATHS = new Set([
+  '/login',
+  '/api/login',
+  '/api/logout',
+  '/api/session',
+  '/api/health',
+  '/favicon.ico',
+  '/apple-touch-icon.png',
+  '/apple-touch-icon-precomposed.png',
+]);
+
+const isPublicPath = (p) => PUBLIC_PATHS.has(p) || p.startsWith('/icons/');
+
+app.use((req, res, next) => {
+  if (isPublicPath(req.path) || isAuthed(req)) return next();
+  /* A page or an asset is sent to the form with a way back. The API and the images get a
+     plain 401 instead, because a redirect would be followed and then answered with HTML
+     where JSON or a picture was expected. Reading the Accept header would be another way
+     to tell them apart, but a WebView or a bare curl does not always send one. */
+  const isApi = req.path.startsWith('/api/') || req.path.startsWith('/i/');
+  if (req.method === 'GET' && !isApi) {
+    /* originalUrl keeps the query string, which is what should be returned to; url is the
+       fallback for a request object that does not carry it */
+    const back = String(req.originalUrl || req.url || req.path || '/');
+    const safe = back.startsWith('/') && !back.startsWith('//') ? back : '/';
+    return res.redirect(302, '/login?next=' + encodeURIComponent(safe));
+  }
+  return res.status(401).json({ error: 'password required' });
+});
 
 /* Uploads are staged and then *moved* into the album folder. rename() only works
    inside a single filesystem, and DATA_DIR is normally a mounted volume — a
@@ -476,7 +538,7 @@ app.get('/api/feed', async (req, res, next) => {
     /* 'upload' — and anything unrecognised — keeps the order listPhotos returned,
        which is the order the photos were uploaded in. */
 
-    const page = photos.slice(offset, offset + limit);
+    const page = await withDims(photos.slice(offset, offset + limit));
     res.json({ photos: page, total: photos.length, offset, limit });
   } catch (err) {
     next(err);
@@ -625,6 +687,10 @@ app.use(
   })
 );
 
+/* The one page served before anyone has a session. Static files are behind the gate, so
+   /login.html itself is not reachable — only this route serves it. */
+app.get('/login', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'login.html')));
+
 app.get('/admin', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
 app.get('*', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
@@ -661,5 +727,11 @@ app.listen(PORT, () => {
         '(on Coolify: Storages → add a volume at /data, and set DATA_DIR=/data), then restart.'
     );
   }
-  if (PASSWORD === 'admin') console.log('WARNING: using the default upload password "admin" — set UPLOAD_PASSWORD.');
+  console.log('every page, API call and photo is behind APP_PASSWORD');
+  if (DEFAULT_PASSWORDS.has(PASSWORD)) {
+    console.error(
+      `WARNING: using the default password "${PASSWORD}" — anyone who can reach this ` +
+        'server can read every photo and upload more. Set APP_PASSWORD to something else.'
+    );
+  }
 });

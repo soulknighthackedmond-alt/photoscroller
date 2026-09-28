@@ -15,13 +15,16 @@
 <!-- what iOS puts on the home screen; Safari ignores an SVG here, so this must be a PNG -->
 <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
 <link rel="manifest" href="/manifest.webmanifest">
-<!-- Fill is the default, and the class goes on before the first paint so a landscape
-     photo never flashes up as a strip while the viewer's own script is still loading. -->
+<!-- Both defaults are class-based and go on before the first paint: "fill" so a landscape
+     photo never flashes up as a strip, "grid-mode" so the thumbnail grid is the layout
+     from the very first frame instead of the one-photo-per-screen feed. -->
 <script>
   try {
     if (localStorage.getItem('ps-mode') !== 'fit') document.documentElement.classList.add('fill-mode');
+    if (localStorage.getItem('ps-layout') !== 'feed') document.documentElement.classList.add('grid-mode');
   } catch (err) {
     document.documentElement.classList.add('fill-mode');
+    document.documentElement.classList.add('grid-mode');
   }
 </script>
 <link rel="stylesheet" href="/styles.css">
@@ -43,11 +46,13 @@
   </nav>
 
   <div class="topbar-right">
+    <button class="icon-btn" id="layoutBtn" type="button" aria-pressed="true" title="Thumbnails in columns, endless — tap for one photo per screen">Grid</button>
     <button class="icon-btn" id="modeBtn" type="button" aria-pressed="false" title="Show the whole photo — tap to fill the screen">Fit</button>
     <button class="icon-btn" id="blurBtn" type="button" aria-pressed="false" title="Blur all thumbnails">Blur</button>
     <button class="icon-btn" id="shuffleBtn" type="button" aria-pressed="false" title="Reshuffle the feed">Shuffle</button>
     <button class="icon-btn hidden" id="installBtn" type="button">Install</button>
     <a class="btn small" href="/admin">Upload</a>
+    <button class="icon-btn" id="logoutBtn" type="button" title="Forget the password on this device">Log out</button>
   </div>
 </header>
 

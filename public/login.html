@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0b0f">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="robots" content="noindex">
+<title>Locked · Photoscroller</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%236c5ce7'/><circle cx='16' cy='17' r='7' fill='none' stroke='white' stroke-width='2.5'/><rect x='9' y='7' width='8' height='4' rx='1.5' fill='white'/></svg>">
+<link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
+<!-- The page is deliberately self-contained: it is the one page served before anyone
+     has a session, so it must not depend on a file that needs one. -->
+<style>
+  :root {
+    --bg: #0b0b0f; --bg-2: #14141b; --bg-3: #1c1c26; --line: #262633;
+    --text: #ececf2; --muted: #8f8fa3; --accent: #6c5ce7;
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-left: env(safe-area-inset-left, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; min-height: 100%;
+    background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    padding: calc(24px + var(--safe-top)) calc(20px + var(--safe-right))
+             calc(24px + var(--safe-bottom)) calc(20px + var(--safe-left));
+    min-height: 100svh;
+  }
+  .card {
+    width: 100%; max-width: 380px;
+    background: var(--bg-2); border: 1px solid var(--line); border-radius: 16px;
+    padding: 26px 22px 22px;
+  }
+  .mark { display: flex; align-items: center; gap: 10px; font-weight: 650; letter-spacing: -.01em; font-size: 17px; }
+  h1 { margin: 18px 0 6px; font-size: 20px; letter-spacing: -.02em; }
+  p { margin: 0 0 18px; color: var(--muted); font-size: 14px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  /* 16px so iOS does not zoom the page when the field is focused */
+  input {
+    width: 100%; padding: 13px 14px; font: inherit; font-size: 16px;
+    color: var(--text); background: var(--bg-3);
+    border: 1px solid var(--line); border-radius: 10px;
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button {
+    width: 100%; margin-top: 12px; padding: 13px 16px;
+    font: inherit; font-size: 15px; font-weight: 550; color: #fff;
+    background: linear-gradient(180deg, var(--accent), #5a4bd6);
+    border: 0; border-radius: 10px; cursor: pointer;
+    min-height: 46px; touch-action: manipulation;
+  }
+  button:disabled { opacity: .55; }
+  .msg { margin: 12px 0 0; font-size: 13.5px; min-height: 18px; color: var(--muted); }
+  .msg.err { color: #ff8095; }
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="mark">
+    <svg viewBox="0 0 32 32" width="24" height="24" aria-hidden="true">
+      <rect width="32" height="32" rx="8" fill="#6c5ce7"></rect>
+      <circle cx="16" cy="17" r="7" fill="none" stroke="#fff" stroke-width="2.5"></circle>
+      <rect x="9" y="7" width="8" height="4" rx="1.5" fill="#fff"></rect>
+    </svg>
+    <span>Photoscroller</span>
+  </div>
+
+  <h1>This library is locked</h1>
+  <p>Enter the password to open it. The same password is used for uploading.</p>
+
+  <form id="form" method="post" action="/api/login">
+    <label for="pw">Password</label>
+    <input id="pw" name="password" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" autofocus>
+    <button id="go" type="submit">Unlock</button>
+  </form>
+  <p class="msg" id="msg" role="status" aria-live="polite"></p>
+</main>
+
+<script>
+  (function () {
+    'use strict';
+    var $ = function (s) { return document.querySelector(s); };
+
+    /* Where to go after unlocking. Only a path on this site is followed: "//evil.com"
+       and "https://evil.com" both start with a slash or look like a path, and both
+       would send a freshly authenticated browser off-site. */
+    var raw = new URLSearchParams(location.search).get('next') || '/';
+    var next = raw.charAt(0) === '/' && raw.charAt(1) !== '/' ? raw : '/';
+
+    function msg(text, kind) {
+      var el = $('#msg');
+      el.textContent = text || '';
+      el.className = 'msg' + (kind ? ' ' + kind : '');
+    }
+
+    /* already unlocked (a second tab, or a bookmark to this page): go straight on */
+    fetch('/api/session', { headers: { accept: 'application/json' } })
+      .then(function (r) { return r.json(); })
+      .then(function (d) { if (d && d.authed) location.replace(next); })
+      .catch(function () { /* offline: the form is still here to try */ });
+
+    $('#form').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      var password = $('#pw').value;
+      if (!password) return msg('Enter the password.', 'err');
+      $('#go').disabled = true;
+      msg('Checking…');
+      try {
+        var res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ password: password }),
+        });
+        if (res.ok) {
+          msg('Unlocked.');
+          location.replace(next);
+          return;
+        }
+        var data = await res.json().catch(function () { return {}; });
+        msg(data.error || 'Wrong password.', 'err');
+        $('#pw').select();
+      } catch (err) {
+        msg('Could not reach the server.', 'err');
+      }
+      $('#go').disabled = false;
+    });
+  })();
+</script>
+</body>
+</html>

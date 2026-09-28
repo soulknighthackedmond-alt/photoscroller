@@ -30,6 +30,9 @@ const state = {
   seed: Math.floor(Math.random() * 1e9),
   loading: false,
   done: false,
+  /* 'grid' is the thumbnail wall (the default, and the Scrolller/rule34 feel);
+     'feed' is one photo per screen. Restored from localStorage on boot. */
+  layout: 'grid',
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -46,6 +49,12 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&
 
 async function api(url) {
   const res = await fetch(url, { headers: { accept: 'application/json' } });
+  /* the session can lapse while a tab sits open; send the browser to the form rather
+     than showing an app that quietly loads nothing */
+  if (res.status === 401) {
+    location.replace('/login?next=' + encodeURIComponent(location.pathname + location.hash));
+    throw new Error('password required');
+  }
   if (!res.ok) throw new Error('request failed: ' + res.status);
   return res.json();
 }
@@ -153,7 +162,9 @@ async function renderAlbums() {
 /* ---------------- feed ---------------- */
 
 async function startFeed(album) {
-  if (state.album === album && feedEl.children.length) {
+  /* "already showing" is state.photos, not feedEl.children: in grid mode the columns
+     are children even when they hold nothing, so an empty album would never load */
+  if (state.album === album && state.photos.length) {
     feedEl.scrollTop = 0;
     updateHud();
     return;
@@ -167,6 +178,7 @@ async function startFeed(album) {
   feedEl.innerHTML = '';
   feedEl.scrollTop = 0;
   captionIndex = -1;
+  if (gridMode()) buildColumns(true);
   await loadMore();
   updateHud();
 }
@@ -177,7 +189,9 @@ async function loadMore() {
   try {
     const params = new URLSearchParams({
       offset: String(state.offset),
-      limit: String(state.limit),
+      /* the grid wants more per page than the feed: twelve full screens is a lot of
+         scrolling, twelve thumbnails is one row and a bit */
+      limit: String(gridMode() ? GRID_PAGE : state.limit),
       order: state.order,
     });
     /* only a shuffle needs the seed: it keeps paging stable instead of repeating photos */
@@ -205,6 +219,7 @@ async function loadMore() {
 }
 
 function appendPhotos(photos) {
+  if (gridMode()) return appendToGrid(photos);
   const frag = document.createDocumentFragment();
   for (const p of photos) {
     const item = document.createElement('figure');
@@ -238,6 +253,161 @@ function appendPhotos(photos) {
   feedEl.appendChild(frag);
   hydrateImages();
 }
+
+/* ---------------- the grid (masonry) ----------------
+
+   Scrolller / rule34-scroller behaviour: thumbnails in columns, endless, and no
+   snapping. Each photo goes into whichever column is currently shortest, which is what
+   keeps the bottom edge even — and the height each one contributes comes from the file
+   header the feed API sends (lib/dims.js), so the space is reserved before the photo
+   arrives and the columns never jump. */
+
+const LAYOUT_KEY = 'ps-layout';
+const GRID_PAGE = 40; /* photos per request in grid mode */
+
+const grid = { cols: [], heights: [] };
+
+const gridMode = () => document.documentElement.classList.contains('grid-mode');
+
+/* Columns by width, so a thumbnail stays a thumbnail: two on a phone, more as the
+   screen grows. Past six the photos stop being recognisable, which defeats the point. */
+function gridColumnCount() {
+  const w = feedEl.clientWidth || window.innerWidth || 390;
+  if (w < 520) return 2;
+  if (w < 820) return 3;
+  if (w < 1180) return 4;
+  if (w < 1600) return 5;
+  return 6;
+}
+
+function buildColumns(force) {
+  const n = gridColumnCount();
+  if (!force && grid.cols.length === n) return;
+  feedEl.classList.add('grid');
+  feedEl.innerHTML = '';
+  grid.cols = [];
+  grid.heights = new Array(n).fill(0);
+  for (let i = 0; i < n; i++) {
+    const col = document.createElement('div');
+    col.className = 'gcol';
+    feedEl.appendChild(col);
+    grid.cols.push(col);
+  }
+}
+
+/* The shortest column wins, measured in units of column width — so the comparison still
+   holds whether the number came from a file header or from a measured element. */
+function shortestColumn() {
+  let best = 0;
+  for (let i = 1; i < grid.heights.length; i++) {
+    if (grid.heights[i] < grid.heights[best]) best = i;
+  }
+  return best;
+}
+
+function rebuildHeights() {
+  const unit = (grid.cols[0] && grid.cols[0].clientWidth) || 1;
+  grid.cols.forEach((col, i) => {
+    grid.heights[i] = col.offsetHeight / unit;
+  });
+}
+
+function appendToGrid(photos) {
+  if (!grid.cols.length) buildColumns(true);
+  for (const p of photos) {
+    const known = !!(p.w && p.h);
+    const tile = document.createElement('button');
+    tile.type = 'button';
+    tile.className = 'tile';
+    tile.dataset.album = p.album;
+    tile.style.aspectRatio = known ? p.w + ' / ' + p.h : '4 / 3';
+    tile.title = albumName(p.album) + ' · ' + p.name;
+
+    const img = document.createElement('img');
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.alt = p.name;
+    img.src = p.url;
+    img.addEventListener('load', () => {
+      tile.classList.add('loaded');
+      /* a photo whose header could not be read still gets its true shape — it just
+         corrects itself a moment later instead of reserving the space up front */
+      if (!known && img.naturalWidth && img.naturalHeight) {
+        tile.style.aspectRatio = img.naturalWidth + ' / ' + img.naturalHeight;
+        rebuildHeights();
+      }
+    });
+    img.addEventListener('error', () => tile.classList.add('loaded'));
+
+    /* the same rule as the feed: a blurred thumbnail is revealed by the first tap, and
+       only a revealed one opens in the zoom overlay */
+    tile.addEventListener('click', () => {
+      if (blurOn() && !tile.classList.contains('revealed')) {
+        tile.classList.add('revealed');
+        return;
+      }
+      openZoom(p);
+    });
+
+    tile.appendChild(img);
+    const col = shortestColumn();
+    grid.cols[col].appendChild(tile);
+    grid.heights[col] += known ? p.h / p.w : 0.75;
+  }
+  rebuildHeights();
+}
+
+/* A different column count means every photo has to be placed again — from the list the
+   viewer already holds, so nothing is fetched twice. */
+function relayoutGrid() {
+  const photos = state.photos.slice();
+  buildColumns(true);
+  appendToGrid(photos);
+}
+
+/* ---------------- grid / feed ---------------- */
+
+const layoutBtn = $('#layoutBtn');
+
+function applyLayout(mode, save = true) {
+  const want = mode === 'grid';
+  document.documentElement.classList.toggle('grid-mode', want);
+  feedEl.classList.toggle('grid', want);
+  state.layout = want ? 'grid' : 'feed';
+  if (layoutBtn) {
+    layoutBtn.textContent = want ? 'Grid' : 'Feed';
+    layoutBtn.setAttribute('aria-pressed', want ? 'true' : 'false');
+    layoutBtn.title = want
+      ? 'Thumbnails in columns, endless — tap for one photo per screen'
+      : 'One photo per screen — tap for the thumbnail grid';
+  }
+  if (save) {
+    try {
+      localStorage.setItem(LAYOUT_KEY, state.layout);
+    } catch {
+      /* private mode: the setting just doesn't survive the visit */
+    }
+  }
+}
+
+/* Switching layout throws the feed away and starts it again: the two modes build
+   different DOM, and splicing one into the other mid-list would leave both on screen. */
+function setLayout(mode) {
+  applyLayout(mode);
+  state.photos = [];
+  state.offset = 0;
+  state.total = 0;
+  state.done = false;
+  state.loading = false;
+  feedEl.innerHTML = '';
+  captionIndex = -1;
+  grid.cols = [];
+  grid.heights = [];
+  if (route().view === 'feed') startFeed(state.album);
+  else updateHud();
+}
+
+if (layoutBtn) layoutBtn.addEventListener('click', () => setLayout(gridMode() ? 'feed' : 'grid'));
 
 /* only fetch images near the viewport */
 let imgObserver = null;
@@ -296,9 +466,11 @@ function updateHud() {
     hudEl.classList.add('hidden');
     return;
   }
-  const idx = Math.min(currentIndex() + 1, state.photos.length);
   const total = state.total || state.photos.length;
   const how = blurOn() ? 'tap a photo to reveal it' : isTouch ? 'swipe up' : 'scroll, or use ↑ ↓';
+  /* the grid has no "current" photo — you are looking at a dozen at once, so the count
+     of what is loaded is the honest number */
+  const idx = gridMode() ? state.photos.length : Math.min(currentIndex() + 1, state.photos.length);
   hudEl.textContent = `${idx} / ${total} · ${how}`;
   hudEl.classList.remove('hidden');
 }
@@ -308,7 +480,8 @@ function updateHud() {
 let captionIndex = -1;
 let captionTimer = null;
 function refreshCaption() {
-  if (!isTouch) return;
+  /* the feed only: a grid thumbnail has no caption sitting on it to fade */
+  if (!isTouch || gridMode()) return;
   const index = currentIndex();
   if (index === captionIndex) return;
   captionIndex = index;
@@ -346,6 +519,22 @@ document.addEventListener('keydown', (e) => {
   }
   const r = route();
   if (r.view !== 'feed') return;
+  /* In the grid, the arrow keys, space, PageUp/Down and the wheel belong to the browser:
+     hijacking them would make a scroller that cannot be scrolled. Only the toggles are
+     ours, and 'g' switches back to the one-per-screen feed. */
+  if (gridMode()) {
+    if (e.key === 'b' || e.key === 'B') {
+      e.preventDefault();
+      setBlur(!blurOn());
+    } else if (e.key === 's' || e.key === 'S') {
+      e.preventDefault();
+      setShuffle(!shuffleOn());
+    } else if (e.key === 'g' || e.key === 'G') {
+      e.preventDefault();
+      setLayout('feed');
+    }
+    return;
+  }
   if (['ArrowDown', 'j', 'PageDown'].includes(e.key)) {
     e.preventDefault();
     scrollToIndex(currentIndex() + 1);
@@ -367,6 +556,9 @@ document.addEventListener('keydown', (e) => {
   } else if (e.key === 's' || e.key === 'S') {
     e.preventDefault();
     setShuffle(!shuffleOn());
+  } else if (e.key === 'g' || e.key === 'G') {
+    e.preventDefault();
+    setLayout('grid');
   } else if (e.key === 'o' || e.key === 'Enter') {
     const p = state.photos[currentIndex()];
     if (p) openZoom(p);
@@ -390,7 +582,7 @@ function setBlur(on, save = true) {
     btn.title = on ? 'Stop blurring thumbnails' : 'Blur all thumbnails';
   }
   /* switching it on re-hides anything already revealed */
-  if (on) feedEl.querySelectorAll('.item.revealed').forEach((el) => el.classList.remove('revealed'));
+  if (on) feedEl.querySelectorAll('.item.revealed, .tile.revealed').forEach((el) => el.classList.remove('revealed'));
   if (save) {
     try {
       localStorage.setItem(BLUR_KEY, on ? '1' : '0');
@@ -728,8 +920,22 @@ function syncScreen() {
    height. */
 let resizeTimer = null;
 function resnap() {
-  const index = route().view === 'feed' ? currentIndex() : -1;
+  const inFeed = route().view === 'feed';
+  /* the index is read BEFORE measuring: scrollTop is in pixels, and a pixel means a
+     different photo once the screen changes height */
+  const index = inFeed && !gridMode() ? currentIndex() : -1;
   syncScreen();
+  if (inFeed && gridMode()) {
+    /* a rotation changes how many columns fit, so every photo is placed again — and the
+       scroll offset is carried over, so you stay roughly where you were */
+    if (grid.cols.length !== gridColumnCount()) {
+      const keep = feedEl.scrollTop;
+      relayoutGrid();
+      feedEl.scrollTop = keep;
+    }
+    updateHud();
+    return;
+  }
   if (index < 0) return;
   scrollToIndex(index, false);
   updateHud();
@@ -795,13 +1001,32 @@ $('#shuffleBtn').addEventListener('click', () => {
 
 window.addEventListener('hashchange', render);
 
+/* The session cookie is what the server checks, so logging out is a request, not just a
+   navigation — otherwise the browser would go back to a page it can still load. */
+$('#logoutBtn').addEventListener('click', async () => {
+  try {
+    await fetch('/api/logout', { method: 'POST' });
+  } catch {
+    /* offline: the cookie still expires on its own */
+  }
+  location.replace('/login');
+});
+
 (async function boot() {
   /* measure before the first photo is created, so the very first screen is right */
   syncScreen();
   try {
-    setBlur(localStorage.getItem(BLUR_KEY) === '1', false);
+    setMode(localStorage.getItem(MODE_KEY) === 'fill' ? 'fill' : 'fit', false);
   } catch {
-    /* private mode: the default is unblurred */
+    /* private mode: the default is "fit" — the whole photo */
+  }
+  /* The grid is the default, and the class is already on <html> from the inline script
+     in index.html; this only has to line the button and the state up with it. No reload
+     here: render() below is what starts the feed, once the album list is in. */
+  try {
+    applyLayout(localStorage.getItem(LAYOUT_KEY) === 'feed' ? 'feed' : 'grid', false);
+  } catch {
+    /* private mode: the default is the grid */
   }
   try {
     /* fill is the default: on a portrait phone a 16:9 photo shown whole is only as wide

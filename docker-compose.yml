@@ -5,7 +5,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      UPLOAD_PASSWORD: admin
+      APP_PASSWORD: changeme
       SESSION_SECRET: change-me-to-a-long-random-string
       DATA_DIR: /data
     volumes:

@@ -8,13 +8,16 @@
 
    - /api/ (login, albums, uploads) and /i/ (the photos) are never touched, so the
      feed and the upload flow always talk to the server;
+   - the login page is never cached, and neither is a redirected response: a logged-out
+     "/" is a 302 to /login, and caching that would leave the form sitting in the slot
+     the app belongs in;
    - navigations and the app shell are network-first: a redeploy is picked up on the
      next load, and the cache is only a fallback when the server is unreachable;
    - everything else is left to the browser's own HTTP cache.
 
    Bump CACHE when the shell list changes; activate() drops the old one. */
 
-const CACHE = 'photoscroller-shell-v2';
+const CACHE = 'photoscroller-shell-v3';
 const SHELL = ['/', '/styles.css', '/app.js', '/zoommath.js', '/admin.js', '/pwa.js', '/manifest.webmanifest', '/icons/icon-192.png'];
 
 self.addEventListener('install', (event) => {
@@ -61,6 +64,13 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/i/')) return;
 
+  /* the login page is never cached and never served from cache: it is the one page
+     whose freshness decides whether you get in */
+  if (url.pathname === '/login') {
+    event.respondWith(fetch(req).catch(() => offlineResponse()));
+    return;
+  }
+
   if (req.mode === 'navigate') {
     event.respondWith(networkFirst(req, '/'));
     return;
@@ -74,7 +84,9 @@ async function networkFirst(req, fallbackUrl) {
   const cache = await caches.open(CACHE);
   try {
     const res = await fetch(req);
-    if (res && res.ok && res.type === 'basic') {
+    /* res.redirected is the logged-out case — "/" came back as the login page. Caching
+       it would put the form where the app shell belongs. */
+    if (res && res.ok && res.type === 'basic' && !res.redirected) {
       await cache.put(req, res.clone()).catch(() => {});
     }
     return res;
@@ -85,9 +97,13 @@ async function networkFirst(req, fallbackUrl) {
       const shell = await cache.match(fallbackUrl);
       if (shell) return shell;
     }
-    return new Response('Offline — this page has not been cached yet.', {
-      status: 503,
-      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-    });
+    return offlineResponse();
   }
+}
+
+function offlineResponse() {
+  return new Response('Offline — this page has not been cached yet.', {
+    status: 503,
+    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+  });
 }
