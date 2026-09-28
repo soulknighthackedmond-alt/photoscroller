@@ -269,15 +269,16 @@ const grid = { cols: [], heights: [] };
 
 const gridMode = () => document.documentElement.classList.contains('grid-mode');
 
-/* Columns by width, so a thumbnail stays a thumbnail: two on a phone, more as the
-   screen grows. Past six the photos stop being recognisable, which defeats the point. */
+/* Columns by width — and these are rule34.pw's own breakpoints, taken from its
+   stylesheet rather than guessed at: ONE full-width column on a phone, two from 768px,
+   three from 1024px. A phone gets a single column because that is what the site this is
+   modelled on does, and it is the better read anyway: the photo is as wide as the screen
+   and you scroll past it, instead of two thumbnails you have to squint at. */
 function gridColumnCount() {
   const w = feedEl.clientWidth || window.innerWidth || 390;
-  if (w < 520) return 2;
-  if (w < 820) return 3;
-  if (w < 1180) return 4;
-  if (w < 1600) return 5;
-  return 6;
+  if (w < 768) return 1;
+  if (w < 1024) return 2;
+  return 3;
 }
 
 function buildColumns(force) {

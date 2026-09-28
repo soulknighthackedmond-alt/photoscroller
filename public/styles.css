@@ -190,11 +190,15 @@ a { color: inherit; text-decoration: none; }
    keeps the bottom edge even. CSS `columns` cannot do this: it reflows the entire set
    every time a page is appended, which throws the scroll position away. */
 
+/* The gutter, the corner radius and the fit below are rule34.pw's own values (8px,
+   6px and `object-fit: contain`), read out of its stylesheet so this matches what the
+   site actually does on a phone rather than approximating it. The gutter is 8px on a
+   phone too — shrinking it on touch is not something the original does. */
 .feed.grid {
   display: flex;
   align-items: flex-start;
-  gap: 6px;
-  padding: 6px;
+  gap: 8px;
+  padding: 8px;
   /* the rule that makes this a scroller rather than a slideshow */
   scroll-snap-type: none;
   scroll-padding: 0;
@@ -205,7 +209,7 @@ a { color: inherit; text-decoration: none; }
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .tile {
@@ -214,7 +218,7 @@ a { color: inherit; text-decoration: none; }
   width: 100%;
   padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: 6px;
   overflow: hidden;
   background: var(--bg-3);
   cursor: zoom-in;
@@ -228,7 +232,10 @@ a { color: inherit; text-decoration: none; }
   display: block;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  /* contain, not cover: a tile is the whole photo, never a crop of it — and on the
+     one-column phone layout the tile already has the photo's own aspect ratio, so the
+     two are the same thing until a header is missing and the box has to fall back */
+  object-fit: contain;
   opacity: 0;
   transition: opacity .25s ease;
   -webkit-user-drag: none;
@@ -659,10 +666,9 @@ input:focus { outline: 2px solid rgba(108, 92, 231, .55); outline-offset: 0; bor
   .dropzone { padding: 34px 18px; }
   .dropzone strong { font-size: 16px; }
 
-  /* the grid goes edge to edge as well: a gutter costs pixels on every single photo */
-  .feed.grid { gap: 4px; padding: 4px; }
-  .gcol { gap: 4px; }
-  .tile { border-radius: 4px; }
+  /* the grid keeps its 8px gutter and 6px corners here on purpose: rule34.pw does not
+     tighten either on touch, and a gutter is what stops a column of full-width photos
+     reading as one continuous smear */
 
   .btn, .icon-btn, .chip, .dropzone, .album-card, .zoom-close { -webkit-tap-highlight-color: transparent; }
 }

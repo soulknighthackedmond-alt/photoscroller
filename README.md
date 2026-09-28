@@ -103,7 +103,8 @@ Worth knowing:
 The default view is a masonry wall of thumbnails — the Scrolller / rule34-scroller feel — and it is a different thing from the feed, not a restyled one:
 
 - **No snapping.** A flick of the thumb crosses a screenful at a time instead of being pulled to a stop at every photo. **Feed** in the top bar (or `g`) switches to one photo per screen.
-- **Columns by width** — two on a phone, up to six on a wide screen, so a thumbnail stays a thumbnail.
+- **Columns by width, at rule34.pw's own breakpoints** — one full-width column on a phone, two from 768px, three from 1024px. The phone gets a single column because that is what the site this is modelled on does, and it is the better read: the photo is as wide as the screen and you scroll past it, instead of two thumbnails you have to squint at.
+- **The other numbers are its too** — an 8px gutter, 6px corners, and a tile that shows the whole photo (`object-fit: contain`) rather than cropping it to the box. The gutter is not tightened on touch, because the original does not tighten it either.
 - **Each photo goes into the shortest column**, which is what keeps the bottom edge even. CSS `columns` cannot do this: it reflows the whole set every time a page is appended, and throws the scroll position away with it.
 - **The space is reserved before the photo arrives.** Each photo's width and height are read from its own file header (`lib/dims.js`) and sent with the feed, so a tile has the right shape before a byte of image lands and the columns never jump under your thumb. That read is a few hundred bytes, cached per file, and a photo whose header cannot be read simply corrects itself when it loads.
 - **Endless scroll** — 40 photos per request, fetched as you approach the bottom.
