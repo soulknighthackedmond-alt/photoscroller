@@ -2,7 +2,7 @@
   "name": "photoscroller",
   "version": "1.0.0",
   "private": false,
-  "description": "Scrolller-style photo scroller: upload a folder of images as an album, then browse every album in an endless vertical feed.",
+  "description": "Scrolller-style photo and video scroller: upload a folder of images or videos as an album, then browse every album in an endless masonry grid.",
   "main": "server.js",
   "license": "MIT",
   "engines": {

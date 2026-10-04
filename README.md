@@ -1,6 +1,6 @@
 # Photoscroller
 
-A tiny self-hosted photo scroller in the spirit of Scrolller. Drop a **folder** of images in, it becomes an **album**, and every album is listed in a masonry grid you scroll endlessly — the rule34-scroller / Scrolller feel.
+A tiny self-hosted photo and video scroller in the spirit of Scrolller. Drop a **folder** of images and videos in, it becomes an **album**, and every album is listed in a masonry grid you scroll endlessly — the rule34-scroller / Scrolller feel.
 
 - **Everything is behind one password** — the pages, the API and the photos themselves (default `changeme`). Uploading and deleting use the same password, so there is one secret to change.
 - **Opens on the album list** — a bare address, a reload and the installed app all land on **Albums**; the mixed **Everything** grid is one chip away.
@@ -13,7 +13,7 @@ A tiny self-hosted photo scroller in the spirit of Scrolller. Drop a **folder** 
 - **Fill by default, fit on demand** — in Feed mode the photo fills the screen so a landscape shot is as big as the phone allows; tap **Fit** to see the whole photo, letterbox filled by its own blurred colours.
 - **Blur mode** — one tap hides every thumbnail, feed photo and album cover; tap a photo to reveal that one.
 - **Installs as an app** — add it to a phone's home screen and it opens full screen with its own icon, and keeps working when the signal drops.
-- **Uploads that survive a phone signal** — photos go up in batches, and anything the server refuses (HEIC, oversized) is named instead of quietly dropped.
+- **Uploads that survive a phone signal** — photos and videos go up in batches, and anything the server refuses (HEIC, oversized) is named instead of quietly dropped.
 - **No database** — albums are plain folders under `DATA_DIR/albums/<slug>/`.
 - **One container, no build step** — Node + Express + a static frontend, so it deploys on Coolify (or anywhere Docker runs) in one go.
 
@@ -58,6 +58,7 @@ The app asks for the password first; then open `/admin` and drop a folder of pho
    | `DATA_DIR` | `/data` |
    | `SESSION_TTL_HOURS` | optional, default `720` (30 days) — how long a login lasts |
    | `MAX_FILE_MB` | optional, default `40` |
+   | `MAX_VIDEO_MB` | optional, default `300` — the ceiling for one video; `MAX_FILE_MB` stays the ceiling for one photo |
    | `MAX_FILES` | optional, default `500` — most photos in one upload request |
    | `PUID` / `PGID` | optional, default `1000` — the uid/gid that should own a bind-mounted `/data` |
 
@@ -73,7 +74,7 @@ The health check hits `/api/health`, which answers `200` only when albums can be
 
 **The page loads but says "Storage isn't writable".** The app is running, the volume is not. Same fix. `GET /api/health` returns `503` with the exact path and error, and the app recovers by itself — no restart — once the volume is writable.
 
-**Uploads report "no accepted images".** HEIC/HEIF from an iPhone; see the phone section above.
+**Uploads report "no accepted files".** HEIC/HEIF from an iPhone; see the phone section above.
 
 **Nothing loads on a phone.** The service worker needs https (or localhost). Coolify gives you https on the domain, not on a raw `ip:port`.
 
@@ -112,6 +113,32 @@ The default view is a masonry wall of thumbnails — the Scrolller / rule34-scro
 - **Tap a photo** to open it full screen with the accurate zoom; tap a blurred one to reveal it first.
 - Rotating the phone changes how many columns fit, so the photos are placed again from the list already in memory — nothing is refetched, and the scroll offset is kept.
 
+## Videos
+
+Videos upload, list and play alongside the photos: `.mp4`, `.m4v`, `.mov`, `.webm` and
+`.ogv`. An `.mkv` or an `.avi` is refused by name — a phone cannot play it, so it would
+upload and then never appear. They sit behind the same password as the photos and are
+served from the same `/i/` route, with byte-range support, so seeking and resuming work.
+
+- **In the grid** a video shows its own **first frame** as the tile, with a play badge.
+  The `#t=0.001` fragment on its URL is what asks the browser for that frame — without it
+  an iOS `<video>` is a black rectangle. The metadata is only fetched once the tile comes
+  near the viewport, so a wall of forty videos is not forty downloads, and nothing ever
+  autoplays.
+- **Tap a video** to open it full screen, where it plays with its own controls. The zoom
+  gestures and the `+`/`−` buttons are off while it is open: there is nothing to zoom, and
+  a pinch over the controls would fight them.
+- **In Feed mode** a video plays in place with the same native controls — it is already
+  one per screen, so there is nothing to open.
+- **Its shape is read from the file header too** (`lib/dims.js` understands the MP4/MOV
+  `moov → trak → tkhd` box and the WebM/Matroska `Tracks → Video → PixelWidth`/
+  `PixelHeight` elements), so a column reserves the right height before a byte of video
+  arrives. A recording that was never "faststart"-ed keeps its header at the *end* of the
+  file, so the tail is read as well; a container the reader cannot make sense of falls back
+  to 16:9 and corrects itself when the video loads.
+- **The size ceiling is separate** — `MAX_VIDEO_MB` (default `300`) against `MAX_FILE_MB`
+  (default `40`) for photos. A file over its own ceiling is named in the reply instead of
+  taking the whole batch down with it.
 ## On a phone
 
 The viewer is built for touch rather than shrunk from the desktop layout:
@@ -191,10 +218,10 @@ still staged at boot is an orphan from a container killed mid-upload, and is swe
 | `GET` | `/api/session` | open | Whether this browser is logged in |
 | `GET` | `/api/health` | open | `200` when albums can be read *and* written; `503` with the path and the error when they cannot |
 | `GET` | `/icons/*.png`, `/apple-touch-icon.png` | open | Home-screen icons — drawn and PNG-encoded in-process, never committed as files |
-| `GET` | `/api/albums` | password | Every album: slug, name, photo count, cover URL — plus `storage: { ok, path, error }` |
+| `GET` | `/api/albums` | password | Every album: slug, name, photo count, video count, cover URL — plus `storage: { ok, path, error }` |
 | `GET` | `/api/feed?album=&offset=&limit=&order=upload\|shuffle\|recent&seed=` | password | Paged photo feed (all albums when `album` is omitted); each photo carries `w`/`h` read from its file header |
 | `GET` | `/i/:album/:file` | password | The image itself |
-| `GET` | `/api/config` | password | Upload limits the upload page needs: `{ maxFileMb, maxFiles }` |
+| `GET` | `/api/config` | password | Upload limits the upload page needs: `{ maxFileMb, maxVideoMb, maxFiles }` |
 | `POST` | `/api/albums` | password | `{ "name": "Tokyo 2026" }` → creates an empty album |
 | `POST` | `/api/albums/:slug/photos` | password | multipart: `name` + many `photos` files → `{ saved, files, skipped }`; `skipped` names the files the server would not accept |
 | `DELETE` | `/api/albums/:slug` | password | Deletes an album and its photos |
@@ -224,7 +251,7 @@ In the grid the arrow keys, space and the wheel are the browser's own — hijack
 ## Security notes
 
 - The password is compared in constant time; 10 failed attempts from one IP locks logins for 10 minutes.
-- Uploads are restricted to image extensions (`.jpg .jpeg .png .gif .webp .avif .bmp` — no SVG, since it can carry script), filenames are sanitised, and photo paths are resolved with `path.basename` so `../` traversal can't escape an album folder.
+- Uploads are restricted to image extensions (`.jpg .jpeg .png .gif .webp .avif .bmp .mp4 .m4v .mov .webm .ogv` — no SVG, since it can carry script), filenames are sanitised, and photo paths are resolved with `path.basename` so `../` traversal can't escape an album folder.
 - Login is an HMAC-signed HttpOnly cookie, not a session store, so the container stays stateless.
 - **Change the default password.** It is only `changeme` because that is the documented default, and the server logs a warning at every boot while it is still set. On a host anyone can reach, leaving it means anyone can read every photo and upload more.
 - It is one password on a cookie, not user accounts: whoever has it sees everything, and there is no way to grant someone read-only access.
@@ -243,7 +270,7 @@ public/styles.css    Dark theme (masonry grid, touch targets, safe-area insets)
 public/manifest.webmanifest   Home-screen install metadata
 public/sw.js         Service worker: caches the shell so the installed app opens offline
 public/pwa.js        Install button, iOS "Add to Home Screen" hint, standalone detection
-lib/dims.js          Photo width/height read from the file header, so the grid can reserve space
+lib/dims.js          Image and video width/height read from the file header, so the grid can reserve space
 lib/icons.js         Home-screen icons, drawn and PNG-encoded at runtime (no binaries in the repo)
 docker-entrypoint.js Makes the mounted volume writable, then drops to the unprivileged user
 Dockerfile           Production image (node:20-alpine, volume at /data)

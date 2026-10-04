@@ -17,6 +17,10 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 const IMAGE_RE = /\.(jpe?g|png|gif|webp|avif|bmp)$/i;
+/* a video is accepted on the same terms as a photo, with its own size ceiling */
+const VIDEO_RE = /\.(mp4|m4v|mov|webm|ogv)$/i;
+const MEDIA_RE = /\.(?:jpe?g|png|gif|webp|avif|bmp|mp4|m4v|mov|webm|ogv)$/i;
+const isVideoName = (name) => VIDEO_RE.test(name);
 const HEIC_RE = /\.(heic|heif)$/i;
 const BATCH_SIZE = 20;
 
@@ -34,7 +38,7 @@ const canPickFolder = 'webkitdirectory' in document.createElement('input');
 let selected = [];
 let folderName = '';
 let idleInfo = 'or click to browse for a folder';
-let limits = { maxFileMb: 40, maxFiles: 500 };
+let limits = { maxFileMb: 40, maxVideoMb: 300, maxFiles: 500 };
 
 function msg(el, text, kind, details) {
   const node = $(el);
@@ -82,7 +86,8 @@ function applyCopy() {
     $('#lead').textContent = 'Pick a folder or some photos — the name becomes the album.';
   }
   $('#sizeHint').textContent =
-    `Images only (jpg, png, gif, webp, avif, bmp), up to ${limits.maxFileMb} MB each, ` +
+    `Photos (jpg, png, gif, webp, avif, bmp) up to ${limits.maxFileMb} MB and videos ` +
+    `(mp4, m4v, mov, webm, ogv) up to ${limits.maxVideoMb} MB, ` +
     `${limits.maxFiles} per upload.`;
 }
 
@@ -201,8 +206,8 @@ function accept(files, source) {
   const rejected = [];
 
   for (const f of files) {
-    if (!IMAGE_RE.test(f.name)) rejected.push(f.name);
-    else if (f.size > limits.maxFileMb * 1048576) tooBig.push(f.name);
+    if (!MEDIA_RE.test(f.name)) rejected.push(f.name);
+    else if (f.size > (isVideoName(f.name) ? limits.maxVideoMb : limits.maxFileMb) * 1048576) tooBig.push(f.name);
     else images.push(f);
   }
 
@@ -219,14 +224,14 @@ function accept(files, source) {
   const details = [];
   if (tooBig.length) {
     details.push(
-      `${tooBig.length} file${tooBig.length === 1 ? '' : 's'} over ${limits.maxFileMb} MB: ` +
+      `${tooBig.length} file${tooBig.length === 1 ? '' : 's'} over its size limit: ` +
         tooBig.slice(0, 5).join(', ') + (tooBig.length > 5 ? ', …' : '')
     );
   }
   if (rejected.length) {
     const heic = rejected.filter((n) => HEIC_RE.test(n)).length;
     details.push(
-      `${rejected.length} file${rejected.length === 1 ? '' : 's'} not an accepted image format: ` +
+      `${rejected.length} file${rejected.length === 1 ? '' : 's'} not an accepted format (photos and playable video): ` +
         rejected.slice(0, 5).join(', ') + (rejected.length > 5 ? ', …' : '')
     );
     if (heic) {
@@ -316,7 +321,7 @@ $('#uploadBtn').addEventListener('click', async () => {
       loadAlbums();
       msg(
         '#uploadMsg',
-        `Stopped after ${savedTotal} of ${total} photos — ${err.message}. ` +
+        `Stopped after ${savedTotal} of ${total} files — ${err.message}. ` +
           `${selected.length} still selected: press Upload again to continue.`,
         'err'
       );
@@ -330,7 +335,7 @@ $('#uploadBtn').addEventListener('click', async () => {
   const details = refused.length
     ? [`${refused.length} file${refused.length === 1 ? '' : 's'} refused by the server: ${refused.slice(0, 5).join(', ')}`]
     : [];
-  msg('#uploadMsg', `Done — ${savedTotal} photo${savedTotal === 1 ? '' : 's'} saved to “${name}”.`, 'ok', details);
+  msg('#uploadMsg', `Done — ${savedTotal} file${savedTotal === 1 ? '' : 's'} saved to “${name}”.`, 'ok', details);
 
   selected = [];
   folderName = '';
@@ -355,8 +360,10 @@ async function loadAlbums() {
   for (const a of albums) {
     const li = document.createElement('li');
     li.innerHTML =
-      `<div class="cover" style="background-image:url('${esc(a.cover)}')"></div>` +
-      `<div class="grow"><strong>${esc(a.name)}</strong><small>${a.count} photo${a.count === 1 ? '' : 's'} · ${esc(a.slug)}</small></div>` +
+      (a.coverKind === 'video'
+        ? `<video class="cover" muted playsinline preload="metadata" src="${esc(a.cover)}#t=0.001"></video>`
+        : `<div class="cover" style="background-image:url('${esc(a.cover)}')"></div>`) +
+      `<div class="grow"><strong>${esc(a.name)}</strong><small>${a.count} item${a.count === 1 ? '' : 's'}${a.videos ? ' · ' + a.videos + ' video' + (a.videos === 1 ? '' : 's') : ''} · ${esc(a.slug)}</small></div>` +
       `<div class="actions">` +
       `<a class="btn small ghost" href="/#/a/${encodeURIComponent(a.slug)}">Open</a>` +
       `<button class="btn small danger" data-slug="${esc(a.slug)}" data-name="${esc(a.name)}">Delete</button>` +

@@ -2,7 +2,7 @@
   "id": "/",
   "name": "Photoscroller",
   "short_name": "Photoscroller",
-  "description": "Self-hosted, Scrolller-style photo scroller: upload a folder as an album, browse every album in an endless vertical feed.",
+  "description": "Self-hosted, Scrolller-style photo and video scroller: upload a folder as an album, browse every album in an endless masonry grid.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

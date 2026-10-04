@@ -792,3 +792,79 @@ input:focus { outline: 2px solid rgba(108, 92, 231, .55); outline-offset: 0; bor
   html { scroll-behavior: auto; }
   .a2hs { animation: none; }
 }
+
+/* ---------- videos ----------
+   A video is laid out exactly like the photo it replaces: the same box and the same
+   object-fit, so a portrait phone recording and a landscape one both fill their column
+   without being cropped. The badge is the only thing that differs, because a first
+   frame looks exactly like a photo otherwise. */
+
+.tile.video { position: relative; }
+
+.tile video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.tile.video::after {
+  content: "\25B6";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 46px;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-left: 3px;
+  border-radius: 50%;
+  background: rgba(10, 10, 14, .6);
+  color: #fff;
+  font-size: 16px;
+  line-height: 1;
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
+
+/* the feed: a video is already one per screen, so it plays in place with its own
+   controls instead of opening the overlay */
+.item video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  touch-action: manipulation;
+}
+
+html.fill-mode .item > video { object-fit: cover; }
+
+/* the overlay: a video is shown whole and plays with its own controls. Zoom is off
+   while one is open — there is nothing to zoom, and a pinch over the controls fights
+   them — so the +/- buttons and the read-out are hidden and the overlay stops
+   swallowing the gestures the controls need. */
+.zoom video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  outline: none;
+  touch-action: manipulation;
+}
+.zoom.video { touch-action: manipulation; }
+.zoom.video .zoom-ui .zoom-btn:not(.zoom-close) { display: none; }
+.zoom.video img { display: none; }
+
+/* an album whose only cover is a video, and a blurred video tile */
+.album-card video.thumb { width: 100%; height: 100%; object-fit: cover; background: #000; }
+.blur-thumbs .item video,
+.blur-thumbs .tile video,
+.blur-thumbs .album-card video { filter: blur(18px); transform: scale(1.06); }
+.blur-thumbs .item.revealed video,
+.blur-thumbs .tile.revealed video { filter: none; transform: none; }

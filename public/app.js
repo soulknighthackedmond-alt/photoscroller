@@ -197,7 +197,9 @@ async function renderAlbums() {
     card.className = 'album-card';
     card.href = '#/a/' + encodeURIComponent(a.slug);
     card.innerHTML =
-      `<div class="thumb" style="background-image:url('${esc(a.cover)}')"></div>` +
+      (a.coverKind === 'video'
+        ? `<video class="thumb" muted playsinline preload="metadata" src="${esc(a.cover)}#t=0.001"></video>`
+        : `<div class="thumb" style="background-image:url('${esc(a.cover)}')"></div>`) +
       `<div class="info"><strong>${esc(a.name)}</strong><span>${a.count}</span></div>`;
     grid.appendChild(card);
   }
@@ -270,28 +272,48 @@ function appendPhotos(photos) {
     item.className = 'item';
     item.dataset.album = p.album;
 
-    const img = document.createElement('img');
-    img.loading = 'lazy';
-    img.decoding = 'async';
-    img.alt = p.name;
-    img.dataset.src = p.url;
-    img.addEventListener('load', () => img.classList.add('loaded'));
-    img.addEventListener('error', () => img.classList.add('loaded'));
-    /* blurred: the first tap reveals this one photo; only a revealed photo opens in the
-       zoom overlay, so a blurred picture can never be seen sharp by accident */
-    img.addEventListener('click', () => {
-      if (blurOn() && !item.classList.contains('revealed')) {
-        item.classList.add('revealed');
-        return;
-      }
-      openZoom(p);
-    });
+    let el;
+    if (p.kind === 'video') {
+      /* In the feed a video is already one per screen, so there is nothing to open:
+         it plays in place, with its own controls, and the first tap only reveals it
+         when blur mode has hidden it. */
+      el = document.createElement('video');
+      el.controls = true;
+      el.playsInline = true;
+      el.setAttribute('playsinline', '');
+      el.preload = 'metadata';
+      el.dataset.src = p.url + '#t=0.001';
+      el.addEventListener('loadedmetadata', () => el.classList.add('loaded'));
+      el.addEventListener('error', () => el.classList.add('loaded'));
+      lazyMedia(el);
+      item.classList.add('video');
+      el.addEventListener('click', () => {
+        if (blurOn() && !item.classList.contains('revealed')) item.classList.add('revealed');
+      });
+    } else {
+      el = document.createElement('img');
+      el.loading = 'lazy';
+      el.decoding = 'async';
+      el.alt = p.name;
+      el.dataset.src = p.url;
+      el.addEventListener('load', () => el.classList.add('loaded'));
+      el.addEventListener('error', () => el.classList.add('loaded'));
+      /* blurred: the first tap reveals this one photo; only a revealed photo opens in the
+         zoom overlay, so a blurred picture can never be seen sharp by accident */
+      el.addEventListener('click', () => {
+        if (blurOn() && !item.classList.contains('revealed')) {
+          item.classList.add('revealed');
+          return;
+        }
+        openZoom(p);
+      });
+    }
 
     const meta = document.createElement('figcaption');
     meta.className = 'meta';
     meta.innerHTML = `<b>${esc(albumName(p.album))}</b><span class="name">${esc(p.name)}</span>`;
 
-    item.append(img, meta);
+    item.append(el, meta);
     frag.appendChild(item);
   }
   feedEl.appendChild(frag);
@@ -358,31 +380,75 @@ function rebuildHeights() {
 }
 
 function appendToGrid(photos) {
+/* A grid of forty videos must not be forty downloads: a <video> has no loading="lazy",
+   so its source is only handed over once the tile comes near the viewport. */
+const lazyMedia = (() => {
+  if (typeof IntersectionObserver !== 'function') {
+    return (el) => { if (el.dataset.src) el.src = el.dataset.src; };
+  }
+  const io = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const el = entry.target;
+      io.unobserve(el);
+      if (el.dataset.src) el.src = el.dataset.src;
+    }
+  }, { rootMargin: '1200px 0px' });
+  return (el) => io.observe(el);
+})();
+
   if (!grid.cols.length) buildColumns(true);
   for (const p of photos) {
     const known = !!(p.w && p.h);
+    const isVid = p.kind === 'video';
     const tile = document.createElement('button');
     tile.type = 'button';
     tile.className = 'tile';
     tile.dataset.album = p.album;
-    tile.style.aspectRatio = known ? p.w + ' / ' + p.h : '4 / 3';
+    tile.style.aspectRatio = known ? p.w + ' / ' + p.h : (isVid ? '16 / 9' : '4 / 3');
     tile.title = albumName(p.album) + ' · ' + p.name;
 
-    const img = document.createElement('img');
-    img.loading = 'lazy';
-    img.decoding = 'async';
-    img.alt = p.name;
-    img.src = p.url;
-    img.addEventListener('load', () => {
-      tile.classList.add('loaded');
-      /* a photo whose header could not be read still gets its true shape — it just
-         corrects itself a moment later instead of reserving the space up front */
-      if (!known && img.naturalWidth && img.naturalHeight) {
-        tile.style.aspectRatio = img.naturalWidth + ' / ' + img.naturalHeight;
-        rebuildHeights();
-      }
-    });
-    img.addEventListener('error', () => tile.classList.add('loaded'));
+    let el;
+    if (isVid) {
+      /* A video tile is the video's own first frame: there is no thumbnail to make,
+         so the browser is asked for the frame at 0.001s — without that fragment an
+         iOS <video> sits there as a black rectangle. Muted and never autoplaying: a
+         wall of forty autoplaying videos is a data bill, not a gallery. */
+      el = document.createElement('video');
+      el.muted = true;
+      el.loop = true;
+      el.playsInline = true;
+      el.setAttribute('playsinline', '');
+      el.setAttribute('muted', '');
+      el.preload = 'metadata';
+      el.dataset.src = p.url + '#t=0.001';
+      tile.classList.add('video');
+      lazyMedia(el);
+      el.addEventListener('loadedmetadata', () => {
+        tile.classList.add('loaded');
+        if (!known && el.videoWidth && el.videoHeight) {
+          tile.style.aspectRatio = el.videoWidth + ' / ' + el.videoHeight;
+          rebuildHeights();
+        }
+      });
+      el.addEventListener('error', () => tile.classList.add('loaded'));
+    } else {
+      el = document.createElement('img');
+      el.loading = 'lazy';
+      el.decoding = 'async';
+      el.alt = p.name;
+      el.src = p.url;
+      el.addEventListener('load', () => {
+        tile.classList.add('loaded');
+        /* a photo whose header could not be read still gets its true shape — it just
+           corrects itself a moment later instead of reserving the space up front */
+        if (!known && el.naturalWidth && el.naturalHeight) {
+          tile.style.aspectRatio = el.naturalWidth + ' / ' + el.naturalHeight;
+          rebuildHeights();
+        }
+      });
+      el.addEventListener('error', () => tile.classList.add('loaded'));
+    }
 
     /* the same rule as the feed: a blurred thumbnail is revealed by the first tap, and
        only a revealed one opens in the zoom overlay */
@@ -394,7 +460,7 @@ function appendToGrid(photos) {
       openZoom(p);
     });
 
-    tile.appendChild(img);
+    tile.appendChild(el);
     const col = shortestColumn();
     grid.cols[col].appendChild(tile);
     grid.heights[col] += known ? p.h / p.w : 0.75;
@@ -564,7 +630,7 @@ function scrollToIndex(i, smooth = true) {
 document.addEventListener('keydown', (e) => {
   if (!zoomEl.classList.contains('hidden')) {
     if (e.key === 'Escape') closeZoom();
-    else if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomAt(centre(), 1.25); }
+    else if (!videoMode() && (e.key === '+' || e.key === '=')) { e.preventDefault(); zoomAt(centre(), 1.25); }
     else if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomAt(centre(), 1 / 1.25); }
     else if (e.key === '0') { e.preventDefault(); resetZoom(); }
     return;
@@ -696,6 +762,12 @@ $('#modeBtn').addEventListener('click', () => setMode(fillOn() ? 'fit' : 'fill')
    C that zoommath.js works in. */
 
 const ZM = window.ZoomMath;
+
+/* The overlay shows a photo or a video, never both. index.html ships both elements;
+   a page cached from a build older than this file has no #zoomVideo, and then
+   everything below behaves exactly as it did before videos existed. */
+const zoomVideo = $('#zoomVideo');
+const videoMode = () => !!(zoomVideo && zoomEl.classList.contains('video'));
 const MIN_SCALE = 1;      /* fit — the whole photo; the viewer never goes below it */
 const MAX_SCALE = 8;
 const DBL_TAP_SCALE = 2.5;
@@ -789,6 +861,10 @@ function lockScroll(on) {
 }
 
 function openZoom(photo) {
+  const isVid = photo.kind === 'video' && !!zoomVideo;
+  /* the class is what turns the overlay's zoom gestures off and hides the +/-
+     buttons: a video has its own controls, and a pinch over them fights them */
+  zoomEl.classList.toggle('video', isVid);
   lockScroll(true);
   /* un-hide before measuring: a display:none overlay has no client size */
   zoomEl.classList.remove('hidden');
@@ -799,14 +875,38 @@ function openZoom(photo) {
   view.t = { x: 0, y: 0 };
   zoomImg.alt = photo.name;
   zoomImg.src = photo.url;
+  if (isVid) {
+    zoomImg.removeAttribute('src');
+    zoomImg.classList.add('hidden');
+    zoomVideo.classList.remove('hidden');
+    zoomVideo.src = photo.url;
+    /* this runs inside the tap that opened it, so iOS lets it play unprompted */
+    const started = zoomVideo.play();
+    if (started && started.catch) started.catch(() => {});
+  } else if (zoomVideo) {
+    zoomVideo.pause();
+    zoomVideo.removeAttribute('src');
+    zoomVideo.classList.add('hidden');
+    zoomImg.classList.remove('hidden');
+  }
   $('#zoomHint').textContent = isTouch
     ? 'Pinch or double-tap to zoom · drag to pan · swipe down to close'
     : 'Scroll or double-click to zoom · drag to pan · Esc to close';
+  if (isVid) $('#zoomHint').textContent = 'Playing with its own controls \u00b7 tap Close or swipe down to dismiss';
   /* a cached photo is already decoded, so measure now; a new one fires load */
   if (zoomImg.complete && zoomImg.naturalWidth) refitZoom();
 }
 
 function closeZoom() {
+  zoomEl.classList.remove('video');
+  /* stop it before hiding it: a video left playing behind a hidden overlay keeps
+     its audio running */
+  if (zoomVideo) {
+    zoomVideo.pause();
+    zoomVideo.removeAttribute('src');
+    zoomVideo.classList.add('hidden');
+  }
+  zoomImg.classList.remove('hidden');
   zoomEl.classList.add('hidden');
   lockScroll(false);
   zoomImg.style.transform = '';
@@ -831,6 +931,8 @@ zoomImg.addEventListener('load', refitZoom);
 
 zoomEl.addEventListener('pointerdown', (e) => {
   if (e.target.closest && e.target.closest('.zoom-ui')) return;   /* buttons are their own */
+  /* a video plays with its own controls: no pan, no pinch, no tap-to-zoom over them */
+  if (videoMode()) return;
   pointers.set(e.pointerId, localPoint(e));
   if (zoomEl.setPointerCapture) {
     try {
@@ -857,6 +959,7 @@ zoomEl.addEventListener('pointerdown', (e) => {
 });
 
 zoomEl.addEventListener('pointermove', (e) => {
+  if (videoMode()) return;
   if (!pointers.has(e.pointerId)) return;
   pointers.set(e.pointerId, localPoint(e));
   const l = listOf();
@@ -893,6 +996,7 @@ zoomEl.addEventListener('pointermove', (e) => {
 });
 
 function endPointer(e) {
+  if (videoMode()) return;
   if (!pointers.delete(e.pointerId)) return;
   const l = listOf();
   if (l.length < 2) pinch = null;
@@ -949,7 +1053,7 @@ function handleTap(p) {
 zoomEl.addEventListener(
   'wheel',
   (e) => {
-    if (!zoomOpen()) return;
+    if (!zoomOpen() || videoMode()) return;
     e.preventDefault();
     const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? view.VH : 1;
     zoomAt(localPoint(e), Math.exp(-e.deltaY * unit * (e.ctrlKey ? 0.01 : 0.0015)));

@@ -1,13 +1,13 @@
 'use strict';
 
 /**
- * Photoscroller — a self-hosted, Scrolller-style photo feed.
+ * Photoscroller — a self-hosted, Scrolller-style photo and video feed.
  *
  * Everything is behind one password (APP_PASSWORD, default "changeme"): the pages, the
  * API and the photos themselves. Uploading and deleting use that same password, so
  * there is one secret to change rather than two.
  *
- * Storage is plain folders on disk:  <DATA_DIR>/albums/<album-slug>/*.jpg
+ * Storage is plain folders on disk:  <DATA_DIR>/albums/<album-slug>/*.jpg|*.mp4
  * Point DATA_DIR at a mounted volume so albums survive redeploys.
  */
 
@@ -34,12 +34,27 @@ const SESSION_SECRET =
    and the cookie is HttpOnly, signed and revocable by changing the secret. */
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_HOURS || 720) * 3600 * 1000;
 const MAX_FILE_MB = Number(process.env.MAX_FILE_MB || 40);
+/* A phone video is tens of times the size of a photo, so the two kinds get their own
+   ceiling. The multipart limit is set to the larger of the two; the per-file check in
+   the upload route below is what applies the right one to each file. */
+const MAX_VIDEO_MB = Number(process.env.MAX_VIDEO_MB || 300);
 const MAX_FILES = Number(process.env.MAX_FILES || 500);
 const COOKIE_NAME = 'ps_session';
 const META_FILE = '.album.json';
 const IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.avif', '.bmp']);
 
 const isImage = (name) => IMAGE_EXT.has(path.extname(name).toLowerCase());
+/* Video containers a browser can actually play. An .mkv or an .avi is not worth
+   accepting: the phone cannot play it, so it would upload and then never appear.
+   HEVC inside a .mov plays on iOS and on Safari, which is what an iPhone records. */
+const VIDEO_EXT = new Set(['.mp4', '.m4v', '.mov', '.webm', '.ogv']);
+const MEDIA_EXT = new Set([...IMAGE_EXT, ...VIDEO_EXT]);
+
+const isVideo = (name) => VIDEO_EXT.has(path.extname(name).toLowerCase());
+/* anything this app will store, list and serve */
+const isMedia = (name) => isImage(name) || isVideo(name);
+const mediaKind = (name) => (isVideo(name) ? 'video' : 'image');
+
 
 /* the home-screen icons are drawn and PNG-encoded in-process (lib/icons.js) rather
    than committed as binaries, so there is one reviewable source for every size */
@@ -113,7 +128,7 @@ function albumPath(slug) {
 
 function photoPath(slug, file) {
   const base = path.basename(String(file || ''));
-  if (!base || base === META_FILE || !isImage(base)) throw new Error('bad photo name');
+  if (!base || base === META_FILE || !isMedia(base)) throw new Error('bad photo name');
   const full = path.join(albumPath(slug), base);
   if (path.dirname(full) !== albumPath(slug)) throw new Error('bad photo path');
   return full;
@@ -163,7 +178,7 @@ async function listPhotos(slug) {
   }
   const photos = [];
   for (const entry of entries) {
-    if (!entry.isFile() || !isImage(entry.name) || entry.name === META_FILE) continue;
+    if (!entry.isFile() || !isMedia(entry.name) || entry.name === META_FILE) continue;
     let stat = null;
     try {
       stat = await fsp.stat(path.join(dir, entry.name));
@@ -174,6 +189,7 @@ async function listPhotos(slug) {
       album: slugify(slug),
       name: entry.name,
       url: '/i/' + encodeURIComponent(slugify(slug)) + '/' + encodeURIComponent(entry.name),
+      kind: mediaKind(entry.name),
       size: stat.size,
       mtime: stat.mtimeMs,
     });
@@ -215,7 +231,11 @@ async function listAlbums() {
       name: meta.name,
       createdAt: meta.createdAt,
       count: photos.length,
-      cover: photos[0].url,
+      videos: photos.filter((p) => p.kind === 'video').length,
+      /* a cover is a still: an album that starts with a video still shows a photo on
+         the card while it has one, and falls back to the video when it has nothing else */
+      cover: (photos.find((p) => p.kind === 'image') || photos[0]).url,
+      coverKind: (photos.find((p) => p.kind === 'image') || photos[0]).kind,
       updatedAt: Math.max(...photos.map((p) => p.mtime)),
     });
   }
@@ -239,7 +259,9 @@ async function withDims(photos) {
     photos.map(async (photo) => {
       try {
         const key = `${photo.album}/${photo.name}|${photo.mtime}|${photo.size}`;
-        const d = await DIMS.dims(photoPath(photo.album, photo.name), key);
+        const abs = photoPath(photo.album, photo.name);
+        /* a video is read with its own container reader, next to the image one */
+        const d = photo.kind === 'video' ? await DIMS.videoDims(abs, key) : await DIMS.dims(abs, key);
         return d ? { ...photo, w: d.w, h: d.h } : photo;
       } catch {
         return photo;
@@ -256,7 +278,7 @@ async function uniqueFileName(dir, original) {
       .replace(/[^a-zA-Z0-9._-]+/g, '-')
       .replace(/^-+|-+$/g, '')
       .slice(0, 80) || 'photo';
-  const ext = IMAGE_EXT.has(parsed.ext.toLowerCase()) ? parsed.ext.toLowerCase() : '.jpg';
+  const ext = MEDIA_EXT.has(parsed.ext.toLowerCase()) ? parsed.ext.toLowerCase() : '.jpg';
   let candidate = safeBase + ext;
   let i = 1;
   // eslint-disable-next-line no-constant-condition
@@ -437,11 +459,11 @@ const upload = multer({
     filename: (_req, file, cb) =>
       cb(null, Date.now().toString(36) + '-' + crypto.randomBytes(6).toString('hex') + (path.extname(file.originalname) || '.jpg')),
   }),
-  limits: { fileSize: MAX_FILE_MB * 1024 * 1024, files: MAX_FILES },
+  limits: { fileSize: MAX_VIDEO_MB * 1024 * 1024, files: MAX_FILES },
   /* multer skips a rejected file silently, so note it: a phone uploading HEIC
      photos would otherwise just get "fewer photos than you chose" with no reason. */
   fileFilter: (req, file, cb) => {
-    const ok = isImage(file.originalname);
+    const ok = isMedia(file.originalname);
     if (!ok) {
       if (!req.skippedFiles) req.skippedFiles = [];
       req.skippedFiles.push(String(file.originalname || '').slice(0, 120));
@@ -455,7 +477,7 @@ const upload = multer({
 app.get('/api/session', (req, res) => res.json({ authed: isAuthed(req), requiresPassword: true }));
 
 /* what the upload page needs to know before it starts sending bytes */
-app.get('/api/config', (_req, res) => res.json({ maxFileMb: MAX_FILE_MB, maxFiles: MAX_FILES }));
+app.get('/api/config', (_req, res) => res.json({ maxFileMb: MAX_FILE_MB, maxVideoMb: MAX_VIDEO_MB, maxFiles: MAX_FILES }));
 
 app.post('/api/login', (req, res) => {
   const ip = req.ip || 'unknown';
@@ -583,8 +605,8 @@ app.post('/api/albums/:slug/photos', requireAuth, upload.array('photos', MAX_FIL
       const skipped = req.skippedFiles || [];
       return res.status(400).json({
         error: skipped.length
-          ? `no accepted images in that request (${skipped.length} file(s) skipped: ${skipped.slice(0, 3).join(', ')})`
-          : 'no images in request',
+          ? `no accepted files in that request (${skipped.length} file(s) skipped: ${skipped.slice(0, 3).join(', ')})`
+          : 'no files in request',
         skipped,
       });
     }
@@ -599,17 +621,33 @@ app.post('/api/albums/:slug/photos', requireAuth, upload.array('photos', MAX_FIL
     }
 
     const saved = [];
+    /* multer's own limit has to be the video ceiling, so the photo ceiling is applied
+       here instead: an oversized photo is refused by name rather than taking the whole
+       batch down with it. */
+    const refused = req.skippedFiles || [];
     for (const file of files) {
+      const capMb = isVideo(file.originalname) ? MAX_VIDEO_MB : MAX_FILE_MB;
+      if (file.size > capMb * 1024 * 1024) {
+        refused.push(file.originalname + ' (over ' + capMb + 'MB)');
+        continue;
+      }
       const target = await uniqueFileName(dir, file.originalname);
       await moveFile(file.path, path.join(dir, target));
       saved.push(target);
+    }
+    if (!saved.length) {
+      await cleanupStaged(files);
+      return res.status(400).json({
+        error: 'no accepted files in that request (' + refused.length + ' file(s) refused: ' + refused.slice(0, 3).join(', ') + ')',
+        skipped: refused,
+      });
     }
     /* Record the arrival order before answering: the album is read back from this
        array, so a batch scrolls in the order it was sent rather than by mtime. */
     for (const name of saved) if (!meta.order.includes(name)) meta.order.push(name);
     await writeMeta(slug, meta);
     await cleanupStaged(files);
-    res.json({ album: slug, saved: saved.length, files: saved, skipped: req.skippedFiles || [] });
+    res.json({ album: slug, saved: saved.length, files: saved, skipped: refused });
   } catch (err) {
     await cleanupStaged(files);
     next(err);
