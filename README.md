@@ -5,6 +5,8 @@ A tiny self-hosted photo and video scroller in the spirit of Scrolller. Drop a *
 - **Everything is behind one password** — the pages, the API and the photos themselves (default `changeme`). Uploading and deleting use the same password, so there is one secret to change.
 - **Opens on the album list** — a bare address, a reload and the installed app all land on **Albums**; the mixed **Everything** grid is one chip away.
 - **Masonry grid, endless scroll** — the default view packs thumbnails into columns and never snaps, so a flick of the thumb crosses a screenful at a time. Tap any photo to open it full screen.
+- **Video thumbnails, YouTube-style** — every video gets a still frame made from the file itself, so a wall of videos is a wall of pictures and not a wall of black rectangles. Each tile carries how long the video runs and a red line for how much of it has been watched on that device.
+- **A player of its own** — a video opens in a full-screen player with a scrub bar that shows the buffered part, a double tap either side to skip ten seconds, speed, mute, picture-in-picture, full screen, and the position remembered so closing it by accident is not a loss.
 - **The page scrolls, not a box inside it** — the album list and the feed are ordinary pages with a sticky top bar, the way rule34.pw's are. That is what lets iOS Safari collapse its address bar as you swipe and hand the height back to the photos.
 - **One photo per screen when you want it** — **Feed** in the top bar is the snap-scrolling viewer: one image per screen, arrow-key / `j` `k` / space navigation, pinch or double-tap to zoom.
 - **Accurate zoom** — pinch, double-tap, drag and wheel zoom about the exact point under your fingers, on a photo laid out at its real pixel size.
@@ -59,6 +61,12 @@ The app asks for the password first; then open `/admin` and drop a folder of pho
    | `SESSION_TTL_HOURS` | optional, default `720` (30 days) — how long a login lasts |
    | `MAX_FILE_MB` | optional, default `40` |
    | `MAX_VIDEO_MB` | optional, default `300` — the ceiling for one video; `MAX_FILE_MB` stays the ceiling for one photo |
+   | `POSTER_W` | optional, default `640` — how wide a generated video still frame is. Never upscaled |
+   | `POSTER_JOBS` | optional, default `2` — how many still frames may be made at once. Two, because the box is small |
+   | `POSTER_SEEK` | optional, default `1` — seconds into the video the still is taken from, falling back to the first frame |
+   | `POSTER_TIMEOUT_MS` | optional, default `20000` — give up on one video after this long |
+   | `MAX_POSTER_KB` | optional, default `4096` — the largest still frame accepted from a browser |
+   | `FFMPEG_PATH` | optional — point at a specific ffmpeg instead of the one on `PATH` |
    | `MAX_FILES` | optional, default `500` — most photos in one upload request |
    | `PUID` / `PGID` | optional, default `1000` — the uid/gid that should own a bind-mounted `/data` |
 
@@ -120,25 +128,66 @@ Videos upload, list and play alongside the photos: `.mp4`, `.m4v`, `.mov`, `.web
 upload and then never appear. They sit behind the same password as the photos and are
 served from the same `/i/` route, with byte-range support, so seeking and resuming work.
 
-- **In the grid** a video shows its own **first frame** as the tile, with a play badge.
-  The `#t=0.001` fragment on its URL is what asks the browser for that frame — without it
-  an iOS `<video>` is a black rectangle. The metadata is only fetched once the tile comes
-  near the viewport, so a wall of forty videos is not forty downloads, and nothing ever
-  autoplays.
-- **Tap a video** to open it full screen, where it plays with its own controls. The zoom
-  gestures and the `+`/`−` buttons are off while it is open: there is nothing to zoom, and
-  a pinch over the controls would fight them.
-- **In Feed mode** a video plays in place with the same native controls — it is already
-  one per screen, so there is nothing to open.
-- **Its shape is read from the file header too** (`lib/dims.js` understands the MP4/MOV
-  `moov → trak → tkhd` box and the WebM/Matroska `Tracks → Video → PixelWidth`/
-  `PixelHeight` elements), so a column reserves the right height before a byte of video
-  arrives. A recording that was never "faststart"-ed keeps its header at the *end* of the
-  file, so the tail is read as well; a container the reader cannot make sense of falls back
-  to 16:9 and corrects itself when the video loads.
+- **A tile is the video's own still frame**, with a play badge, the running time in the
+  corner and a red line along the bottom for how much of it has been watched on this
+  device — the YouTube furniture, and all of it drawn from data already in hand.
+- **Tap a video anywhere** — grid or feed — and it opens in the player. Nothing autoplays,
+  so scrolling past a video costs nothing and nothing starts talking at you.
 - **The size ceiling is separate** — `MAX_VIDEO_MB` (default `300`) against `MAX_FILE_MB`
   (default `40`) for photos. A file over its own ceiling is named in the reply instead of
   taking the whole batch down with it.
+- **Its shape and its length are read from the file header** (`lib/dims.js` understands the
+  MP4/MOV `moov → trak → tkhd` box, `moov → mvhd` for the running time, and the
+  WebM/Matroska `Tracks → Video → PixelWidth`/`PixelHeight` and `Info → Duration`
+  elements), so a column reserves the right height and the tile knows its time before a
+  byte of video arrives. A recording that was never "faststart"-ed keeps its header at the
+  *end* of the file, so the tail is read as well; a container the reader cannot make sense
+  of falls back to 16:9 and corrects itself when the video loads.
+
+### Where the thumbnails come from
+
+A still frame per video, made once and kept on the volume beside the albums — under
+`DATA_DIR/posters/<album>/`, never inside an album folder, so a generated file can never
+turn up in a listing, in the recorded upload order or in a delete. Two things make them:
+
+1. **The browser that uploads it.** The upload page seeks a second into the video, draws
+   that frame to a canvas and sends the JPEG beside the video it belongs to. This is why an
+   iPhone's HEVC `.mov` gets a thumbnail: the browser that recorded it can decode it.
+2. **ffmpeg on the server**, for everything else and for videos uploaded before this
+   existed. It is made on the first request for `/p/...`, two at a time, and cached. The
+   image installs ffmpeg; without it the feature turns itself off, the endpoint answers
+   `404`, and a tile falls back to the video's own first frame — which is what it did
+   before posters existed. `/api/health` reports which of the two you have.
+
+Only a real JPEG under `MAX_POSTER_KB` is ever stored, and a still frame that cannot be
+made is a `404` rather than a broken image on every tile.
+
+### The player
+
+A video never opens the photo overlay: that one is for photos, where a pinch means
+something. The player is its own layer, and it is built to feel like the one everyone
+already knows.
+
+- **The poster shows first**, so there is no black flash while the video buffers.
+- **The controls get out of the way** three seconds after you stop touching them, and never
+  while the video is paused.
+- **The scrub bar shows three things** — what has played, what has been buffered, and where
+  a drag would land (a time tooltip follows the pointer).
+- **Double-tap the left or right third** to go back or forward ten seconds, with the
+  `-10s` / `+10s` shown where you tapped.
+- **Speed** (1x → 1.25 → 1.5 → 2 → 0.5), **mute**, **volume** (wide screens; a phone's
+  hardware buttons are already there), **picture-in-picture** where the browser has it, and
+  **full screen**.
+- **The position is remembered per video**, on that device only — close it by accident and
+  it offers "Resumed from 4:12" next time. Finishing a video clears it.
+- **The screen is held awake** while it plays, and the download is stopped on close: a
+  paused video keeps buffering, and on a phone that is your data.
+- **In Feed mode** a finished video offers **Next**, which moves on the way a feed does. In
+  the grid, closing it leaves you exactly where you were.
+
+On a phone the bar breaks into two rows rather than dropping a control, and on iOS the
+element is inline (`playsinline`) so the picture is never handed to the system player —
+which would take the controls away.
 ## On a phone
 
 The viewer is built for touch rather than shrunk from the desktop layout:
@@ -220,10 +269,11 @@ still staged at boot is an orphan from a container killed mid-upload, and is swe
 | `GET` | `/icons/*.png`, `/apple-touch-icon.png` | open | Home-screen icons — drawn and PNG-encoded in-process, never committed as files |
 | `GET` | `/api/albums` | password | Every album: slug, name, photo count, video count, cover URL — plus `storage: { ok, path, error }` |
 | `GET` | `/api/feed?album=&offset=&limit=&order=upload\|shuffle\|recent&seed=` | password | Paged photo feed (all albums when `album` is omitted); each photo carries `w`/`h` read from its file header |
-| `GET` | `/i/:album/:file` | password | The image itself |
+| `GET` | `/i/:album/:file` | password | The media itself, with byte-range support so a video seeks |
+| `GET` | `/p/:album/:file` | password | The still frame for a video, made on first request and cached. `404` for a photo, or with no ffmpeg |
 | `GET` | `/api/config` | password | Upload limits the upload page needs: `{ maxFileMb, maxVideoMb, maxFiles }` |
 | `POST` | `/api/albums` | password | `{ "name": "Tokyo 2026" }` → creates an empty album |
-| `POST` | `/api/albums/:slug/photos` | password | multipart: `name` + many `photos` files → `{ saved, files, skipped }`; `skipped` names the files the server would not accept |
+| `POST` | `/api/albums/:slug/photos` | password | multipart: `name` + many `photos` files, plus optional `posters` (one JPEG per video, named after it) → `{ saved, files, posters, skipped }`; `skipped` names the files the server would not accept |
 | `DELETE` | `/api/albums/:slug` | password | Deletes an album and its photos |
 | `DELETE` | `/api/albums/:slug/photos/:file` | password | Deletes one photo |
 
@@ -248,9 +298,25 @@ Everything except those first six rows needs the session cookie. Without one, a 
 
 In the grid the arrow keys, space and the wheel are the browser's own — hijacking them would make a scroller that cannot be scrolled — so only the toggles above are bound.
 
+While the player is open it takes the keyboard, and the feed keeps out of it:
+
+| Key | Action |
+| --- | --- |
+| `Space` / `k` | play / pause |
+| `j` / `l` | back / forward 10 seconds |
+| `←` / `→` | back / forward 5 seconds |
+| `↑` / `↓` | volume up / down |
+| `0`–`9` | jump to that tenth of the video |
+| `Home` / `End` | the start / the end |
+| `m` | mute |
+| `f` | full screen |
+| `p` | picture-in-picture |
+| `Esc` | leave full screen, then close the player |
+
 ## Security notes
 
 - The password is compared in constant time; 10 failed attempts from one IP locks logins for 10 minutes.
+- A video's still frame is an upload like any other: JPEG magic bytes and a size ceiling are checked before it is stored, and it is only ever written under `DATA_DIR/posters/`.
 - Uploads are restricted to image extensions (`.jpg .jpeg .png .gif .webp .avif .bmp .mp4 .m4v .mov .webm .ogv` — no SVG, since it can carry script), filenames are sanitised, and photo paths are resolved with `path.basename` so `../` traversal can't escape an album folder.
 - Login is an HMAC-signed HttpOnly cookie, not a session store, so the container stays stateless.
 - **Change the default password.** It is only `changeme` because that is the documented default, and the server logs a warning at every boot while it is still set. On a host anyone can reach, leaving it means anyone can read every photo and upload more.
@@ -261,7 +327,8 @@ In the grid the arrow keys, space and the wheel are the browser's own — hijack
 ```
 server.js            Express app: password gate, albums, feed, uploads
 public/index.html    Viewer shell (grid + feed + album list)
-public/app.js        Grid, feed, routing, keyboard nav, zoom gestures
+public/app.js        Grid, feed, routing, keyboard nav, zoom gestures, video tiles and badges
+public/player.js     The video player: controls, gestures, keyboard, remembered position
 public/zoommath.js   The zoom arithmetic (no DOM, so it can be tested)
 public/login.html    The password form — self-contained, served before anyone has a session
 public/admin.html    Upload page
@@ -270,10 +337,10 @@ public/styles.css    Dark theme (masonry grid, touch targets, safe-area insets)
 public/manifest.webmanifest   Home-screen install metadata
 public/sw.js         Service worker: caches the shell so the installed app opens offline
 public/pwa.js        Install button, iOS "Add to Home Screen" hint, standalone detection
-lib/dims.js          Image and video width/height read from the file header, so the grid can reserve space
+lib/dims.js          Image and video width/height and running time read from the file header, so the grid can reserve space and a tile can badge it
 lib/icons.js         Home-screen icons, drawn and PNG-encoded at runtime (no binaries in the repo)
 docker-entrypoint.js Makes the mounted volume writable, then drops to the unprivileged user
-Dockerfile           Production image (node:20-alpine, volume at /data)
+Dockerfile           Production image (node:20-alpine + ffmpeg for the video stills, volume at /data)
 docker-compose.yml   Local run
 ```
 

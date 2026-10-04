@@ -198,7 +198,9 @@ async function renderAlbums() {
     card.href = '#/a/' + encodeURIComponent(a.slug);
     card.innerHTML =
       (a.coverKind === 'video'
-        ? `<video class="thumb" muted playsinline preload="metadata" src="${esc(a.cover)}#t=0.001"></video>`
+        /* the still frame goes on the element's poster, so the card is a picture
+           immediately and the video's own first frame is the fallback */
+        ? `<video class="thumb" muted playsinline preload="metadata" poster="${esc(a.coverPoster || '')}" src="${esc(a.cover)}#t=0.001"></video>`
         : `<div class="thumb" style="background-image:url('${esc(a.cover)}')"></div>`) +
       `<div class="info"><strong>${esc(a.name)}</strong><span>${a.count}</span></div>`;
     grid.appendChild(card);
@@ -271,24 +273,22 @@ function appendPhotos(photos) {
     const item = document.createElement('figure');
     item.className = 'item';
     item.dataset.album = p.album;
+    item.dataset.name = p.name;
 
     let el;
     if (p.kind === 'video') {
-      /* In the feed a video is already one per screen, so there is nothing to open:
-         it plays in place, with its own controls, and the first tap only reveals it
-         when blur mode has hidden it. */
-      el = document.createElement('video');
-      el.controls = true;
-      el.playsInline = true;
-      el.setAttribute('playsinline', '');
-      el.preload = 'metadata';
-      el.dataset.src = p.url + '#t=0.001';
-      el.addEventListener('loadedmetadata', () => el.classList.add('loaded'));
-      el.addEventListener('error', () => el.classList.add('loaded'));
-      lazyMedia(el);
+      /* One photo per screen, and a video is its still frame with a play mark on it. The
+         tap opens the player rather than playing here: scrolling past a video then costs
+         nothing, and nothing starts talking at you out of a feed. */
+      el = posterEl(p, item, true);
       item.classList.add('video');
+      item.appendChild(badges(p));
       el.addEventListener('click', () => {
-        if (blurOn() && !item.classList.contains('revealed')) item.classList.add('revealed');
+        if (blurOn() && !item.classList.contains('revealed')) {
+          item.classList.add('revealed');
+          return;
+        }
+        openMedia(p);
       });
     } else {
       el = document.createElement('img');
@@ -318,6 +318,130 @@ function appendPhotos(photos) {
   }
   feedEl.appendChild(frag);
   hydrateImages();
+}
+
+
+/* ---------------- videos: a still frame, a length, a red line ----------------
+
+   A video is shown as its own poster, not as a <video>: a wall of forty video elements
+   each decoding a first frame is a lot of work and a lot of memory for a picture the
+   size of a stamp, and a <video> has no loading="lazy" to hold it back. The server makes
+   one still per video (/p/), which is also what the player puts on screen before the
+   first byte of video arrives. */
+
+/* 12:34, or 1:02:03 when it runs past the hour. Empty when the length is not known. */
+function fmtTime(seconds) {
+  const total = Math.round(Number(seconds) || 0);
+  if (!(total > 0)) return '';
+  const h = Math.floor(total / 3600);
+  const m = Math.floor(total / 60) % 60;
+  const s = total % 60;
+  const mm = h ? String(m).padStart(2, '0') : String(m);
+  return (h ? h + ':' : '') + mm + ':' + String(s).padStart(2, '0');
+}
+
+/* How much of a video has been watched on this device, 0..1. The store lives in the
+   player, which is what writes it, so the red line under a thumbnail and the position
+   the player resumes from can never disagree. */
+function watchedRatio(p) {
+  const player = window.VideoPlayer;
+  if (!player || !player.watched) return 0;
+  return player.watched(p, p.duration);
+}
+
+/* The YouTube furniture on a video thumbnail: how long it runs, and how much of it has
+   been seen. Both come from data already in hand — the length from the file header, the
+   line from this device's own memory — so decorating a tile costs no extra request. */
+function badges(p) {
+  const wrap = document.createElement('div');
+  wrap.className = 'badges';
+  const length = fmtTime(p.duration);
+  if (length) {
+    const time = document.createElement('span');
+    time.className = 'dur';
+    time.textContent = length;
+    wrap.appendChild(time);
+  }
+  const seen = watchedRatio(p);
+  if (seen > 0.005) {
+    const line = document.createElement('span');
+    line.className = 'seen';
+    line.style.width = Math.round(seen * 100) + '%';
+    wrap.appendChild(line);
+  }
+  return wrap;
+}
+
+/* A video's still frame. When there is no poster to be had — a build with no ffmpeg, or
+   a container it cannot open — the image fails and the element is swapped for the video
+   itself, which is what this did before posters existed: the browser draws its own first
+   frame, and #t=0.001 is what stops iOS sitting on a black rectangle instead. */
+function posterEl(p, holder, defer) {
+  const url = p.poster || p.url + '#t=0.001';
+  const img = document.createElement('img');
+  img.loading = 'lazy';
+  img.decoding = 'async';
+  img.alt = p.name;
+  img.className = 'poster';
+  /* the feed defers through the shared observer (which also sets the letterbox
+     backdrop); the grid lets the browser's own lazy loading do it */
+  if (defer) img.dataset.src = url;
+  else img.src = url;
+  img.addEventListener('load', () => {
+    img.classList.add('loaded');
+    if (holder) holder.classList.add('loaded');
+  });
+  img.addEventListener('error', () => {
+    const video = document.createElement('video');
+    video.muted = true;
+    video.loop = true;
+    video.playsInline = true;
+    video.setAttribute('playsinline', '');
+    video.setAttribute('muted', '');
+    video.preload = 'metadata';
+    video.dataset.src = p.url + '#t=0.001';
+    video.addEventListener('loadedmetadata', () => {
+      video.classList.add('loaded');
+      if (holder) holder.classList.add('loaded');
+    });
+    video.addEventListener('error', () => video.classList.add('loaded'));
+    lazyMedia(video);
+    img.replaceWith(video);
+  });
+  return img;
+}
+
+/* Where a photo or a video is opened from. A video goes to the player; the overlay stays
+   a photo viewer, which is what keeps its gestures unambiguous — a pinch over a video's
+   controls fights them. */
+function openMedia(photo) {
+  if (photo.kind !== 'video') return openZoom(photo);
+  const player = window.VideoPlayer;
+  if (player && player.available()) {
+    lockScroll(true);
+    player.open(photo, {
+      title: photo.name,
+      sub: albumName(photo.album),
+      next: nextInFeed(photo),
+      /* the player holds the page still while it is open and releases it on close,
+         however that happened: the Close button, Escape, or the video ending */
+      onClose: () => lockScroll(false),
+    });
+    return;
+  }
+  /* a page cached from a build older than this file has no player in it, so the file is
+     handed to the browser, which will at least play it */
+  window.open(photo.url, '_blank', 'noopener');
+}
+
+/* The next item in the feed, so a finished video can move on the way a feed does. Null in
+   the grid: there, closing the player should leave you exactly where you were. */
+function nextInFeed(photo) {
+  if (gridMode()) return null;
+  const all = Array.from(feedEl.querySelectorAll('.item'));
+  const at = all.findIndex((el) => el.dataset.album === photo.album && el.dataset.name === photo.name);
+  if (at < 0 || at + 1 >= all.length) return null;
+  return () => scrollToY(all[at + 1].offsetTop, true);
 }
 
 /* ---------------- the grid (masonry) ----------------
@@ -405,33 +529,25 @@ const lazyMedia = (() => {
     tile.type = 'button';
     tile.className = 'tile';
     tile.dataset.album = p.album;
+    tile.dataset.name = p.name;
     tile.style.aspectRatio = known ? p.w + ' / ' + p.h : (isVid ? '16 / 9' : '4 / 3');
     tile.title = albumName(p.album) + ' · ' + p.name;
 
     let el;
     if (isVid) {
-      /* A video tile is the video's own first frame: there is no thumbnail to make,
-         so the browser is asked for the frame at 0.001s — without that fragment an
-         iOS <video> sits there as a black rectangle. Muted and never autoplaying: a
-         wall of forty autoplaying videos is a data bill, not a gallery. */
-      el = document.createElement('video');
-      el.muted = true;
-      el.loop = true;
-      el.playsInline = true;
-      el.setAttribute('playsinline', '');
-      el.setAttribute('muted', '');
-      el.preload = 'metadata';
-      el.dataset.src = p.url + '#t=0.001';
+      /* A video tile is its still frame: one small JPEG, made from the file itself by
+         the server, so a wall of videos is a wall of pictures and nothing is downloaded
+         until a tile is opened. */
+      el = posterEl(p, tile, false);
       tile.classList.add('video');
-      lazyMedia(el);
-      el.addEventListener('loadedmetadata', () => {
+      tile.appendChild(badges(p));
+      el.addEventListener('load', () => {
         tile.classList.add('loaded');
-        if (!known && el.videoWidth && el.videoHeight) {
-          tile.style.aspectRatio = el.videoWidth + ' / ' + el.videoHeight;
+        if (!known && el.naturalWidth && el.naturalHeight) {
+          tile.style.aspectRatio = el.naturalWidth + ' / ' + el.naturalHeight;
           rebuildHeights();
         }
       });
-      el.addEventListener('error', () => tile.classList.add('loaded'));
     } else {
       el = document.createElement('img');
       el.loading = 'lazy';
@@ -457,7 +573,7 @@ const lazyMedia = (() => {
         tile.classList.add('revealed');
         return;
       }
-      openZoom(p);
+      openMedia(p);
     });
 
     tile.appendChild(el);
@@ -628,9 +744,12 @@ function scrollToIndex(i, smooth = true) {
 }
 
 document.addEventListener('keydown', (e) => {
+  /* The player has keys of its own and they overlap: space, the arrows, j/k/l, m and f
+     all mean something different there. Nothing here runs while it is open. */
+  if (window.VideoPlayer && window.VideoPlayer.isOpen()) return;
   if (!zoomEl.classList.contains('hidden')) {
     if (e.key === 'Escape') closeZoom();
-    else if (!videoMode() && (e.key === '+' || e.key === '=')) { e.preventDefault(); zoomAt(centre(), 1.25); }
+    else if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomAt(centre(), 1.25); }
     else if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomAt(centre(), 1 / 1.25); }
     else if (e.key === '0') { e.preventDefault(); resetZoom(); }
     return;
@@ -763,11 +882,9 @@ $('#modeBtn').addEventListener('click', () => setMode(fillOn() ? 'fit' : 'fill')
 
 const ZM = window.ZoomMath;
 
-/* The overlay shows a photo or a video, never both. index.html ships both elements;
-   a page cached from a build older than this file has no #zoomVideo, and then
-   everything below behaves exactly as it did before videos existed. */
-const zoomVideo = $('#zoomVideo');
-const videoMode = () => !!(zoomVideo && zoomEl.classList.contains('video'));
+/* The overlay is a photo viewer, and only that. A video opens in the player
+   (player.js), where a tap, a drag and a double tap each mean something different and
+   none of them is a pinch. */
 const MIN_SCALE = 1;      /* fit — the whole photo; the viewer never goes below it */
 const MAX_SCALE = 8;
 const DBL_TAP_SCALE = 2.5;
@@ -861,10 +978,6 @@ function lockScroll(on) {
 }
 
 function openZoom(photo) {
-  const isVid = photo.kind === 'video' && !!zoomVideo;
-  /* the class is what turns the overlay's zoom gestures off and hides the +/-
-     buttons: a video has its own controls, and a pinch over them fights them */
-  zoomEl.classList.toggle('video', isVid);
   lockScroll(true);
   /* un-hide before measuring: a display:none overlay has no client size */
   zoomEl.classList.remove('hidden');
@@ -875,38 +988,14 @@ function openZoom(photo) {
   view.t = { x: 0, y: 0 };
   zoomImg.alt = photo.name;
   zoomImg.src = photo.url;
-  if (isVid) {
-    zoomImg.removeAttribute('src');
-    zoomImg.classList.add('hidden');
-    zoomVideo.classList.remove('hidden');
-    zoomVideo.src = photo.url;
-    /* this runs inside the tap that opened it, so iOS lets it play unprompted */
-    const started = zoomVideo.play();
-    if (started && started.catch) started.catch(() => {});
-  } else if (zoomVideo) {
-    zoomVideo.pause();
-    zoomVideo.removeAttribute('src');
-    zoomVideo.classList.add('hidden');
-    zoomImg.classList.remove('hidden');
-  }
   $('#zoomHint').textContent = isTouch
     ? 'Pinch or double-tap to zoom · drag to pan · swipe down to close'
     : 'Scroll or double-click to zoom · drag to pan · Esc to close';
-  if (isVid) $('#zoomHint').textContent = 'Playing with its own controls \u00b7 tap Close or swipe down to dismiss';
   /* a cached photo is already decoded, so measure now; a new one fires load */
   if (zoomImg.complete && zoomImg.naturalWidth) refitZoom();
 }
 
 function closeZoom() {
-  zoomEl.classList.remove('video');
-  /* stop it before hiding it: a video left playing behind a hidden overlay keeps
-     its audio running */
-  if (zoomVideo) {
-    zoomVideo.pause();
-    zoomVideo.removeAttribute('src');
-    zoomVideo.classList.add('hidden');
-  }
-  zoomImg.classList.remove('hidden');
   zoomEl.classList.add('hidden');
   lockScroll(false);
   zoomImg.style.transform = '';
@@ -931,8 +1020,6 @@ zoomImg.addEventListener('load', refitZoom);
 
 zoomEl.addEventListener('pointerdown', (e) => {
   if (e.target.closest && e.target.closest('.zoom-ui')) return;   /* buttons are their own */
-  /* a video plays with its own controls: no pan, no pinch, no tap-to-zoom over them */
-  if (videoMode()) return;
   pointers.set(e.pointerId, localPoint(e));
   if (zoomEl.setPointerCapture) {
     try {
@@ -959,7 +1046,6 @@ zoomEl.addEventListener('pointerdown', (e) => {
 });
 
 zoomEl.addEventListener('pointermove', (e) => {
-  if (videoMode()) return;
   if (!pointers.has(e.pointerId)) return;
   pointers.set(e.pointerId, localPoint(e));
   const l = listOf();
@@ -996,7 +1082,6 @@ zoomEl.addEventListener('pointermove', (e) => {
 });
 
 function endPointer(e) {
-  if (videoMode()) return;
   if (!pointers.delete(e.pointerId)) return;
   const l = listOf();
   if (l.length < 2) pinch = null;
@@ -1053,7 +1138,7 @@ function handleTap(p) {
 zoomEl.addEventListener(
   'wheel',
   (e) => {
-    if (!zoomOpen() || videoMode()) return;
+    if (!zoomOpen()) return;
     e.preventDefault();
     const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? view.VH : 1;
     zoomAt(localPoint(e), Math.exp(-e.deltaY * unit * (e.ctrlKey ? 0.01 : 0.0015)));

@@ -80,7 +80,6 @@
 
 <div id="zoom" class="zoom hidden">
   <img id="zoomImg" alt="">
-  <video id="zoomVideo" class="hidden" playsinline controls preload="metadata"></video>
   <div class="zoom-ui">
     <button class="zoom-btn" id="zoomOut" type="button" aria-label="Zoom out">−</button>
     <button class="zoom-btn zoom-scale" id="zoomScale" type="button" title="Back to the whole photo">100%</button>
@@ -88,6 +87,58 @@
     <button class="zoom-btn zoom-close" id="zoomClose" type="button">Close</button>
   </div>
   <p class="zoom-hint" id="zoomHint"></p>
+</div>
+
+
+<!-- The video player. Videos never open in the zoom overlay: that one is for photos,
+     where a pinch means something. Here the poster shows first, the controls get out of
+     the way while it plays, and a double tap either side moves ten seconds. -->
+<div id="player" class="player hidden" role="dialog" aria-label="Video player">
+  <video id="playerVideo" playsinline preload="metadata"></video>
+
+  <div class="pl-top" id="plTop">
+    <button class="pl-btn pl-x" id="plClose" type="button">Close</button>
+    <div class="pl-title">
+      <strong id="plTitle"></strong>
+      <span id="plSub"></span>
+    </div>
+  </div>
+
+  <div class="pl-center">
+    <button class="pl-big" id="plBig" type="button" aria-label="Play">
+      <span class="pl-icon" aria-hidden="true"></span>
+    </button>
+    <div class="pl-spin hidden" id="plSpin" aria-hidden="true"></div>
+    <button class="pl-next hidden" id="plNext" type="button">Next</button>
+  </div>
+
+  <div class="pl-flash hidden" id="plFlash" aria-hidden="true"></div>
+  <div class="pl-note hidden" id="plResume" aria-hidden="true"></div>
+  <p class="pl-error hidden" id="plError"></p>
+
+  <div class="pl-bar" id="plBar">
+    <!-- two rows on a phone, one on a wide screen: nothing has to be dropped from the
+         control set to make it fit -->
+    <div class="pl-row pl-seek">
+      <button class="pl-btn" id="plPlay" type="button" aria-label="Play">Play</button>
+      <span class="pl-time" id="plTime">0:00</span>
+      <div class="pl-track" id="plTrack" role="slider" tabindex="0" aria-label="Seek"
+           aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div class="pl-buf" id="plBuf"></div>
+        <div class="pl-fill" id="plFill"></div>
+        <div class="pl-knob" id="plKnob"></div>
+        <div class="pl-tip hidden" id="plTip"></div>
+      </div>
+      <span class="pl-time" id="plDur">0:00</span>
+    </div>
+    <div class="pl-row pl-buttons">
+      <button class="pl-btn" id="plMute" type="button" aria-label="Mute">Mute</button>
+      <div class="pl-vol" id="plVol" aria-label="Volume"><div class="pl-volfill" id="plVolFill"></div></div>
+      <button class="pl-btn" id="plRate" type="button" aria-label="Playback speed">1x</button>
+      <button class="pl-btn" id="plPip" type="button" aria-label="Picture in picture">PiP</button>
+      <button class="pl-btn" id="plFull" type="button" aria-label="Full screen">Full</button>
+    </div>
+  </div>
 </div>
 
 <!-- Shown only in iOS Safari, where adding to the home screen is a manual step. -->
@@ -100,6 +151,7 @@
 </div>
 
 <script src="/zoommath.js"></script>
+<script src="/player.js"></script>
 <script src="/app.js"></script>
 <script src="/pwa.js"></script>
 </body>

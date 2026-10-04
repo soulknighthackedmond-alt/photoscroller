@@ -6,8 +6,9 @@
    Chrome/Android only offer to install a site that has a fetch handler. The rules
    are deliberately narrow so it can never show stale content:
 
-   - /api/ (login, albums, uploads) and /i/ (the photos) are never touched, so the
-     feed and the upload flow always talk to the server;
+   - /api/ (login, albums, uploads), /i/ (the media) and /p/ (the still frames for
+     videos) are never touched, so the feed and the upload flow always talk to the
+     server and the immutable files stay in the browser's own cache;
    - the login page is never cached, and neither is a redirected response: a logged-out
      "/" is a 302 to /login, and caching that would leave the form sitting in the slot
      the app belongs in;
@@ -17,8 +18,8 @@
 
    Bump CACHE when the shell list changes; activate() drops the old one. */
 
-const CACHE = 'photoscroller-shell-v4';
-const SHELL = ['/', '/styles.css', '/app.js', '/zoommath.js', '/admin.js', '/pwa.js', '/manifest.webmanifest', '/icons/icon-192.png'];
+const CACHE = 'photoscroller-shell-v5';
+const SHELL = ['/', '/styles.css', '/app.js', '/player.js', '/zoommath.js', '/admin.js', '/pwa.js', '/manifest.webmanifest', '/icons/icon-192.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -62,7 +63,9 @@ self.addEventListener('fetch', (event) => {
     return;
   }
   if (url.origin !== self.location.origin) return;
-  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/i/')) return;
+  /* /i/ is the media and /p/ its still frames: both are immutable and belong to the
+     browser's own cache, never to a shell cache that has to be kept in step */
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/i/') || url.pathname.startsWith('/p/')) return;
 
   /* the login page is never cached and never served from cache: it is the one page
      whose freshness decides whether you get in */

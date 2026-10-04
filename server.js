@@ -18,6 +18,7 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const os = require('os');
 const path = require('path');
+const { spawn } = require('child_process');
 
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
@@ -39,6 +40,17 @@ const MAX_FILE_MB = Number(process.env.MAX_FILE_MB || 40);
    the upload route below is what applies the right one to each file. */
 const MAX_VIDEO_MB = Number(process.env.MAX_VIDEO_MB || 300);
 const MAX_FILES = Number(process.env.MAX_FILES || 500);
+/* Posters: a still frame per video, so a wall of videos is a wall of pictures instead
+   of a wall of black rectangles. Made by ffmpeg and kept on the volume beside the
+   albums; when ffmpeg is not installed the feature turns itself off and the client
+   falls back to a <video>, which is what it did before posters existed. */
+const POSTERS_DIR = path.join(DATA_DIR, 'posters');
+const FFMPEG = String(process.env.FFMPEG_PATH || 'ffmpeg');
+const POSTER_W = Number(process.env.POSTER_W || 640);
+const POSTER_JOBS = Math.max(1, Number(process.env.POSTER_JOBS || 2));
+const POSTER_TIMEOUT_MS = Number(process.env.POSTER_TIMEOUT_MS || 20000);
+const POSTER_SEEK = String(process.env.POSTER_SEEK || '1');
+const MAX_POSTER_KB = Number(process.env.MAX_POSTER_KB || 4096);
 const COOKIE_NAME = 'ps_session';
 const META_FILE = '.album.json';
 const IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.avif', '.bmp']);
@@ -134,11 +146,27 @@ function photoPath(slug, file) {
   return full;
 }
 
+/* Posters live outside the album folders on purpose: an album is the user's own files
+   and nothing else, so a file this app generated never turns up in a listing, in the
+   recorded upload order, or in a delete. */
+function posterPath(slug, file) {
+  const base = path.basename(String(file || ''));
+  if (!base || !isVideo(base)) throw new Error('bad poster name');
+  const dir = path.join(POSTERS_DIR, slugify(slug));
+  const full = path.join(dir, base + '.jpg');
+  if (path.dirname(full) !== dir) throw new Error('bad poster path');
+  return full;
+}
+
+const posterUrl = (slug, name) =>
+  '/p/' + encodeURIComponent(slugify(slug)) + '/' + encodeURIComponent(name);
+
 /* Reads must never throw on a broken volume: the list comes back empty and
    /api/health explains why, instead of the page 500ing. */
 async function ensureDirs() {
   try {
     await fsp.mkdir(ALBUMS_DIR, { recursive: true });
+    await fsp.mkdir(POSTERS_DIR, { recursive: true });
   } catch (err) {
     noteStorage(err);
   }
@@ -189,6 +217,9 @@ async function listPhotos(slug) {
       album: slugify(slug),
       name: entry.name,
       url: '/i/' + encodeURIComponent(slugify(slug)) + '/' + encodeURIComponent(entry.name),
+      /* where the video's still frame will be: made on demand by /p/, so it is a URL
+         and not a promise that the file is there yet. A photo has none. */
+      poster: isVideo(entry.name) ? posterUrl(slug, entry.name) : null,
       kind: mediaKind(entry.name),
       size: stat.size,
       mtime: stat.mtimeMs,
@@ -226,6 +257,7 @@ async function listAlbums() {
     const photos = await listPhotos(slug);
     if (!photos.length) continue;
     const meta = await readMeta(slug);
+    const cover = photos.find((p) => p.kind === 'image') || photos[0];
     albums.push({
       slug,
       name: meta.name,
@@ -234,8 +266,10 @@ async function listAlbums() {
       videos: photos.filter((p) => p.kind === 'video').length,
       /* a cover is a still: an album that starts with a video still shows a photo on
          the card while it has one, and falls back to the video when it has nothing else */
-      cover: (photos.find((p) => p.kind === 'image') || photos[0]).url,
-      coverKind: (photos.find((p) => p.kind === 'image') || photos[0]).kind,
+      cover: cover.url,
+      coverKind: cover.kind,
+      /* and a video cover carries its own still frame, so the card is a picture too */
+      coverPoster: cover.poster || null,
       updatedAt: Math.max(...photos.map((p) => p.mtime)),
     });
   }
@@ -262,7 +296,12 @@ async function withDims(photos) {
         const abs = photoPath(photo.album, photo.name);
         /* a video is read with its own container reader, next to the image one */
         const d = photo.kind === 'video' ? await DIMS.videoDims(abs, key) : await DIMS.dims(abs, key);
-        return d ? { ...photo, w: d.w, h: d.h } : photo;
+        if (!d) return photo;
+        /* a video also reports its running time, which is what the tile's time badge and
+           the player's seek bar are drawn from before a byte of video is downloaded */
+        return d.duration
+          ? { ...photo, w: d.w, h: d.h, duration: d.duration }
+          : { ...photo, w: d.w, h: d.h };
       } catch {
         return photo;
       }
@@ -449,6 +488,189 @@ async function moveFile(src, dest) {
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * posters — a still frame per video
+ *
+ * The grid is a wall of pictures, so a video without one is a black rectangle in the
+ * middle of it, and the tile wants the video's length before anyone opens it. ffmpeg
+ * does the decoding; when it is missing, or cannot read a container, this turns itself
+ * off and the client falls back to a <video>.
+ * ------------------------------------------------------------------ */
+
+let ffmpegOk = null;
+
+function runFfmpeg(args, timeoutMs) {
+  return new Promise((resolve) => {
+    let child = null;
+    try {
+      /* run without a shell: these arguments carry user file names, and a shell is one
+         quoting mistake away from running part of one as a command */
+      child = spawn(FFMPEG, args, { stdio: ['ignore', 'ignore', 'ignore'] });
+    } catch {
+      return resolve(false);
+    }
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    /* a wedged decoder must not hold a slot for ever */
+    const timer = setTimeout(() => {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        /* already gone */
+      }
+      finish(false);
+    }, timeoutMs || POSTER_TIMEOUT_MS);
+    child.on('error', () => finish(false));
+    child.on('close', (code) => finish(code === 0));
+  });
+}
+
+/* Probed once and remembered: an absent ffmpeg is an answer, not a per-request cost. */
+async function ffmpegAvailable() {
+  if (ffmpegOk === null) ffmpegOk = await runFfmpeg(['-version'], 5000);
+  return ffmpegOk;
+}
+
+/* ffmpeg is the slow part, and a grid can ask for forty of them at once on a box with
+   two cores. Two run at a time; the rest wait their turn. */
+let posterRunning = 0;
+const posterWaiting = [];
+
+function posterSlot() {
+  if (posterRunning < POSTER_JOBS) {
+    posterRunning += 1;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => posterWaiting.push(resolve));
+}
+
+function releasePosterSlot() {
+  const next = posterWaiting.shift();
+  /* the slot is handed straight over rather than freed and immediately retaken */
+  if (next) next();
+  else posterRunning = Math.max(0, posterRunning - 1);
+}
+
+/* JPEG magic bytes and a floor on the size: a truncated or empty file has to be a 404,
+   never a broken <img> on every tile. Returns the size, or 0 when it is not a JPEG. */
+async function jpegSize(file) {
+  try {
+    const fh = await fsp.open(file, 'r');
+    try {
+      const stat = await fh.stat();
+      if (stat.size < 128) return 0;
+      const head = Buffer.alloc(3);
+      await fh.read(head, 0, 3, 0);
+      if (head[0] !== 0xff || head[1] !== 0xd8 || head[2] !== 0xff) return 0;
+      return stat.size;
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    return 0;
+  }
+}
+
+async function makePoster(slug, file, dest) {
+  const src = photoPath(slug, file);
+  await fsp.mkdir(path.dirname(dest), { recursive: true });
+  /* The scratch file is written beside the destination, never in /tmp: /data is a
+     mounted volume, rename() cannot cross a filesystem, and a poster made in /tmp
+     could never be moved here. */
+  const tmp = dest + '.part-' + process.pid.toString(36) + '-' + Date.now().toString(36);
+  try {
+    /* A second in is a more representative frame than a black fade-in; a clip shorter
+       than that has nothing there, so the very first frame is the fallback. */
+    for (const seek of [POSTER_SEEK, '0']) {
+      const ok = await runFfmpeg([
+        '-hide_banner', '-loglevel', 'error',
+        '-ss', seek,
+        '-i', src,
+        '-frames:v', '1',
+        /* never upscale — a poster is a thumbnail, and 640px is already more than a
+           phone's column needs */
+        '-vf', "scale='min(" + POSTER_W + ",iw)':-2",
+        /* phones record 10-bit HEVC, which JPEG cannot hold: without this the frame is
+           refused with "incompatible pixel format" */
+        '-pix_fmt', 'yuvj420p',
+        '-q:v', '4',
+        '-f', 'mjpeg',
+        '-y', tmp,
+      ]);
+      if (!ok) continue;
+      if (!(await jpegSize(tmp))) continue;
+      await moveFile(tmp, dest);
+      return dest;
+    }
+    return null;
+  } finally {
+    await fsp.rm(tmp, { force: true }).catch(() => {});
+  }
+}
+
+/* One poster per video, made once and shared by everyone. A second request for a poster
+   that is already being made waits for that one instead of starting another ffmpeg on
+   the same file. */
+const posterJobs = new Map();
+
+async function ensurePoster(slug, file) {
+  let dest;
+  try {
+    dest = posterPath(slug, file);
+  } catch {
+    return null;
+  }
+  if (await jpegSize(dest)) return dest;
+  if (posterJobs.has(dest)) return posterJobs.get(dest);
+  const job = (async () => {
+    await posterSlot();
+    try {
+      if (!(await ffmpegAvailable())) return null;
+      return await makePoster(slug, file, dest);
+    } catch {
+      return null;
+    } finally {
+      releasePosterSlot();
+    }
+  })();
+  posterJobs.set(dest, job);
+  try {
+    return await job;
+  } finally {
+    posterJobs.delete(dest);
+  }
+}
+
+/* A still frame the uploader's browser captured, stored instead of generated. Only a
+   real JPEG under the ceiling is kept: this is an upload like any other, and the file
+   ends up being served to every visitor. */
+async function keepPoster(slug, name, staged) {
+  const size = await jpegSize(staged);
+  if (!size || size > MAX_POSTER_KB * 1024) return false;
+  try {
+    const dest = posterPath(slug, name);
+    await fsp.mkdir(path.dirname(dest), { recursive: true });
+    await moveFile(staged, dest);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* Fire and forget, after an upload has already been answered: the thumbnails are
+   usually in place before anyone opens the album, and a failure changes nothing. */
+function queuePosters(slug, names) {
+  for (const name of names) {
+    if (!isVideo(name)) continue;
+    ensurePoster(slug, name).catch(() => {});
+  }
+}
+
 /* Deliberately not fatal: a root-owned or read-only /data must not stop the
    container from starting — see the storage health note above. */
 checkStorage();
@@ -522,6 +744,8 @@ app.get('/api/health', (_req, res) => {
   res.status(storage.ok ? 200 : 503).json({
     ok: storage.ok,
     storage: storageSummary(),
+    /* whether video thumbnails can be made on this box; null until it is probed */
+    ffmpeg: ffmpegOk,
     uptime: Math.round(process.uptime()),
   });
 });
@@ -579,6 +803,32 @@ app.get('/i/:album/:file', async (req, res, next) => {
   }
 });
 
+/* The still frame for a video: made on the first request, then served off the volume
+   with the same immutable caching as the video itself. A photo has no poster, and a
+   build with no ffmpeg answers 404 — which is what makes the client fall back to a
+   <video> instead of showing a broken image. */
+app.get('/p/:album/:file', async (req, res, next) => {
+  try {
+    let dest;
+    try {
+      dest = posterPath(req.params.album, req.params.file);
+    } catch {
+      return res.status(404).json({ error: 'no poster for that name' });
+    }
+    if (!(await jpegSize(dest))) {
+      const made = await ensurePoster(req.params.album, req.params.file);
+      if (!made) return res.status(404).json({ error: 'no poster for that video' });
+    }
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.setHeader('Content-Type', 'image/jpeg');
+    res.sendFile(dest, (err) => {
+      if (err && !res.headersSent) res.status(err.status || 404).end();
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /* --- write (password) ----------------------------------------------- */
 
 app.post('/api/albums', requireAuth, async (req, res, next) => {
@@ -598,11 +848,22 @@ app.post('/api/albums', requireAuth, async (req, res, next) => {
   }
 });
 
-app.post('/api/albums/:slug/photos', requireAuth, upload.array('photos', MAX_FILES), async (req, res, next) => {
-  const files = req.files || [];
+/* The two multipart fields: the media itself, and an optional still frame per video
+   that the browser grabbed before uploading. */
+const uploadFields = upload.fields([
+  { name: 'photos', maxCount: MAX_FILES },
+  { name: 'posters', maxCount: MAX_FILES },
+]);
+
+app.post('/api/albums/:slug/photos', requireAuth, uploadFields, async (req, res, next) => {
+  const files = (req.files && req.files.photos) || [];
+  /* A captured poster is paired with its video by the original file name; anything
+     left over is deleted along with the staged media. */
+  const posters = (req.files && req.files.posters) || [];
   try {
     if (!files.length) {
       const skipped = req.skippedFiles || [];
+      await cleanupStaged(posters);
       return res.status(400).json({
         error: skipped.length
           ? `no accepted files in that request (${skipped.length} file(s) skipped: ${skipped.slice(0, 3).join(', ')})`
@@ -621,6 +882,7 @@ app.post('/api/albums/:slug/photos', requireAuth, upload.array('photos', MAX_FIL
     }
 
     const saved = [];
+    const captured = [];
     /* multer's own limit has to be the video ceiling, so the photo ceiling is applied
        here instead: an oversized photo is refused by name rather than taking the whole
        batch down with it. */
@@ -634,9 +896,15 @@ app.post('/api/albums/:slug/photos', requireAuth, upload.array('photos', MAX_FIL
       const target = await uniqueFileName(dir, file.originalname);
       await moveFile(file.path, path.join(dir, target));
       saved.push(target);
+      /* a captured still is stored instead of generated, which is what gives an iPhone's
+         HEVC .mov a thumbnail even on a build with no ffmpeg */
+      if (isVideo(target)) {
+        const shot = posters.find((p) => p.originalname === file.originalname);
+        if (shot && (await keepPoster(slug, target, shot.path))) captured.push(target);
+      }
     }
     if (!saved.length) {
-      await cleanupStaged(files);
+      await cleanupStaged([...files, ...posters]);
       return res.status(400).json({
         error: 'no accepted files in that request (' + refused.length + ' file(s) refused: ' + refused.slice(0, 3).join(', ') + ')',
         skipped: refused,
@@ -646,10 +914,19 @@ app.post('/api/albums/:slug/photos', requireAuth, upload.array('photos', MAX_FIL
        array, so a batch scrolls in the order it was sent rather than by mtime. */
     for (const name of saved) if (!meta.order.includes(name)) meta.order.push(name);
     await writeMeta(slug, meta);
-    await cleanupStaged(files);
-    res.json({ album: slug, saved: saved.length, files: saved, skipped: refused });
+    await cleanupStaged([...files, ...posters]);
+    /* posters for the videos that arrived without one, made in the background: the
+       upload answers now, and the thumbnails are there by the time anyone looks */
+    queuePosters(slug, saved.filter((name) => !captured.includes(name)));
+    res.json({
+      album: slug,
+      saved: saved.length,
+      files: saved,
+      posters: captured.length,
+      skipped: refused,
+    });
   } catch (err) {
-    await cleanupStaged(files);
+    await cleanupStaged([...files, ...posters]);
     next(err);
   }
 });
@@ -657,6 +934,8 @@ app.post('/api/albums/:slug/photos', requireAuth, upload.array('photos', MAX_FIL
 app.delete('/api/albums/:slug', requireAuth, async (req, res, next) => {
   try {
     await fsp.rm(albumPath(req.params.slug), { recursive: true, force: true });
+    /* the album's posters go with it, or the volume collects folders of orphans */
+    await fsp.rm(path.join(POSTERS_DIR, slugify(req.params.slug)), { recursive: true, force: true });
     res.json({ ok: true });
   } catch (err) {
     next(err);
@@ -667,6 +946,10 @@ app.delete('/api/albums/:slug/photos/:file', requireAuth, async (req, res, next)
   try {
     const full = photoPath(req.params.slug, req.params.file);
     await fsp.rm(full, { force: true });
+    /* and its still frame, if it had one */
+    if (isVideo(full)) {
+      await fsp.rm(posterPath(req.params.slug, req.params.file), { force: true }).catch(() => {});
+    }
     /* Drop it from the recorded order too, or a later upload of a file with the
        same name would be ranked as if it had always been there. */
     const meta = await readMeta(req.params.slug);
@@ -765,6 +1048,16 @@ app.listen(PORT, () => {
         '(on Coolify: Storages → add a volume at /data, and set DATA_DIR=/data), then restart.'
     );
   }
+  /* probed once at boot and reported, so "no thumbnails" is a line in the log rather
+     than a mystery about why every video tile is black */
+  ffmpegAvailable().then((ok) => {
+    console.log(
+      ok
+        ? 'posters: on (ffmpeg found — video stills are made on demand)'
+        : 'posters: OFF — no ffmpeg on PATH, so videos fall back to their own first ' +
+            'frame. Install ffmpeg, or point FFMPEG_PATH at one, to get thumbnails.'
+    );
+  });
   console.log('every page, API call and photo is behind APP_PASSWORD');
   if (DEFAULT_PASSWORDS.has(PASSWORD)) {
     console.error(

@@ -794,22 +794,30 @@ input:focus { outline: 2px solid rgba(108, 92, 231, .55); outline-offset: 0; bor
 }
 
 /* ---------- videos ----------
-   A video is laid out exactly like the photo it replaces: the same box and the same
-   object-fit, so a portrait phone recording and a landscape one both fill their column
-   without being cropped. The badge is the only thing that differs, because a first
-   frame looks exactly like a photo otherwise. */
+   A video is shown as its own still frame — the server makes one per file — so a tile is
+   a small JPEG instead of a video element decoding a frame, and a wall of forty of them
+   costs forty small images rather than forty decoders. The still is laid out exactly like
+   the photo it replaces: the same box and the same object-fit, so a portrait phone
+   recording and a landscape one both fill their column without being cropped.
 
-.tile.video { position: relative; }
+   A video tile also carries the two things a photo's does not: how long it runs, and a
+   red line for how much of it has been watched on this device. */
 
-.tile video {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  background: #000;
-}
+.tile.video,
+.item.video { position: relative; }
 
-.tile.video::after {
+/* the still frame, and the video element it falls back to when there is no poster */
+.tile .poster,
+.item .poster { background: #000; }
+.item .poster { cursor: pointer; }
+
+/* fill mode is about filling the screen: a fallback video covers it there exactly as the
+   photo beside it does, and as its own still frame already does (html.fill-mode .item > img) */
+html.fill-mode .item > video { object-fit: cover; }
+
+/* the play mark, drawn rather than shipped as an icon */
+.tile.video::after,
+.item.video::after {
   content: "\25B6";
   position: absolute;
   left: 50%;
@@ -831,40 +839,387 @@ input:focus { outline: 2px solid rgba(108, 92, 231, .55); outline-offset: 0; bor
   backdrop-filter: blur(4px);
 }
 
-/* the feed: a video is already one per screen, so it plays in place with its own
-   controls instead of opening the overlay */
-.item video {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  background: #000;
-  touch-action: manipulation;
+/* the length and the watched line. The wrapper is inert on purpose: it sits on top of a
+   tile that is itself a button, and a badge that swallowed the tap would be a bug. */
+.badges { position: absolute; inset: 0; pointer-events: none; }
+
+.badges .dur {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, .78);
+  color: #fff;
+  font-size: 11.5px;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
 }
 
-html.fill-mode .item > video { object-fit: cover; }
-
-/* the overlay: a video is shown whole and plays with its own controls. Zoom is off
-   while one is open — there is nothing to zoom, and a pinch over the controls fights
-   them — so the +/- buttons and the read-out are hidden and the overlay stops
-   swallowing the gestures the controls need. */
-.zoom video {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  background: #000;
-  outline: none;
-  touch-action: manipulation;
+/* the red line: how much of this video has been watched here */
+.badges .seen {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  background: #ff2d55;
 }
-.zoom.video { touch-action: manipulation; }
-.zoom.video .zoom-ui .zoom-btn:not(.zoom-close) { display: none; }
-.zoom.video img { display: none; }
 
-/* an album whose only cover is a video, and a blurred video tile */
+/* an album whose only cover is a video: the still rides on the element's poster
+   attribute, so the card is a picture without fetching the video at all */
 .album-card video.thumb { width: 100%; height: 100%; object-fit: cover; background: #000; }
+
+/* a blurred video, tile or cover — a still and a fallback frame blur alike */
 .blur-thumbs .item video,
 .blur-thumbs .tile video,
 .blur-thumbs .album-card video { filter: blur(18px); transform: scale(1.06); }
 .blur-thumbs .item.revealed video,
 .blur-thumbs .tile.revealed video { filter: none; transform: none; }
+
+/* ---------- the video player ----------
+   One fixed overlay above everything (the zoom layer is 60). The picture is inset to the
+   whole box with object-fit: contain, so a portrait recording and a landscape one both
+   sit inside it whole. Everything else is a layer on top: a bar at the top, a bar at the
+   bottom, and a centre button that is always there while the video is paused and gets out
+   of the way while it is not. */
+
+.player {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background: #000;
+  overflow: hidden;
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.player video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  outline: none;
+  cursor: pointer;
+}
+
+/* the top and bottom layers fade together, so the picture is never half dressed */
+.pl-top,
+.pl-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  color: #fff;
+  transition: opacity .22s ease, transform .22s ease;
+}
+
+.pl-top {
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: calc(10px + var(--safe-top, 0px)) calc(12px + var(--safe-right, 0px)) 16px calc(12px + var(--safe-left, 0px));
+  background: linear-gradient(rgba(0, 0, 0, .82), transparent);
+}
+
+.pl-bar {
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 22px calc(12px + var(--safe-right, 0px)) calc(10px + var(--safe-bottom, 0px)) calc(12px + var(--safe-left, 0px));
+  background: linear-gradient(transparent, rgba(0, 0, 0, .84));
+}
+
+.pl-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pl-seek { flex: 1 1 auto; }
+.pl-buttons { flex: 0 0 auto; }
+
+#player.idle .pl-top { opacity: 0; transform: translateY(-12px); pointer-events: none; }
+#player.idle .pl-bar { opacity: 0; transform: translateY(12px); pointer-events: none; }
+
+.pl-title { min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.pl-title strong {
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pl-title span { font-size: 11.5px; color: rgba(255, 255, 255, .62); }
+
+.pl-btn {
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, .14);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.pl-btn:hover { background: rgba(255, 255, 255, .24); }
+
+.pl-time {
+  flex: 0 0 auto;
+  min-width: 44px;
+  text-align: center;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, .85);
+}
+
+/* The scrub bar: a 22px hit area around a 4px line, so a thumb can grab it without the
+   bar itself looking like a slab. touch-action: none is what hands the drag over
+   instead of scrolling the page behind it. */
+.pl-track {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 40px;
+  height: 22px;
+  cursor: pointer;
+  touch-action: none;
+}
+.pl-track::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, .26);
+}
+.pl-buf,
+.pl-fill {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 2px;
+  pointer-events: none;
+}
+.pl-buf { background: rgba(255, 255, 255, .42); }
+.pl-fill { background: #ff2d55; }
+.pl-knob {
+  position: absolute;
+  top: 50%;
+  width: 13px;
+  height: 13px;
+  margin: -6.5px 0 0 -6.5px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, .6);
+  pointer-events: none;
+}
+.pl-tip {
+  position: absolute;
+  bottom: 24px;
+  transform: translateX(-50%);
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, .86);
+  color: #fff;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.pl-vol {
+  position: relative;
+  flex: 0 0 auto;
+  width: 74px;
+  height: 22px;
+  cursor: pointer;
+  touch-action: none;
+}
+.pl-vol::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, .26);
+}
+.pl-volfill {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 2px;
+  background: #fff;
+  pointer-events: none;
+}
+
+/* the centre: the play button while paused, the spinner while it is thinking, the next
+   button once it has ended */
+.pl-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  pointer-events: none;
+}
+
+.pl-big {
+  width: 72px;
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(12, 12, 16, .62);
+  color: #fff;
+  cursor: pointer;
+  pointer-events: auto;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  transition: opacity .2s ease, width .2s ease, height .2s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* paused: it is there whatever else is happening. playing: it shrinks, and only while
+   the controls are up. */
+#player.paused .pl-big { opacity: 1; }
+#player.playing .pl-big { opacity: 0; pointer-events: none; }
+#player.playing:not(.idle) .pl-big { opacity: .8; pointer-events: auto; width: 54px; height: 54px; }
+
+/* the play triangle and the pause bars, drawn rather than shipped as a glyph */
+.pl-icon { position: relative; width: 22px; height: 22px; }
+.pl-icon::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 0;
+  border-style: solid;
+  border-width: 11px 0 11px 17px;
+  border-color: transparent transparent transparent #fff;
+}
+#player.playing .pl-icon::before {
+  left: 2px;
+  border: 0;
+  width: 6px;
+  height: 22px;
+  background: #fff;
+}
+#player.playing .pl-icon::after {
+  content: "";
+  position: absolute;
+  right: 2px;
+  top: 0;
+  width: 6px;
+  height: 22px;
+  background: #fff;
+}
+
+.pl-spin {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, .28);
+  border-top-color: #fff;
+  animation: pl-turn .9s linear infinite;
+}
+@keyframes pl-turn { to { transform: rotate(360deg); } }
+
+.pl-next {
+  padding: 10px 18px;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .92);
+  color: #0b0b0f;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+/* the "+10s" that a double tap leaves behind */
+.pl-flash {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  padding: 10px 16px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, .6);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  opacity: 0;
+  pointer-events: none;
+}
+.pl-flash.go { animation: pl-flash .7s ease forwards; }
+@keyframes pl-flash {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(.9); }
+  25% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(1); }
+}
+
+.pl-note {
+  position: absolute;
+  left: 50%;
+  bottom: calc(84px + var(--safe-bottom, 0px));
+  transform: translateX(-50%);
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, .74);
+  color: #fff;
+  font-size: 12.5px;
+  pointer-events: none;
+}
+
+.pl-error {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  max-width: min(420px, 84vw);
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgba(24, 8, 12, .9);
+  border: 1px solid rgba(255, 128, 149, .35);
+  color: #ffd7dd;
+  font-size: 13.5px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+/* A phone: no room for a volume slider and no need for one — the hardware buttons are
+   already there, and the mute button is what a thumb wants. The bar breaks into two
+   rows so nothing has to be dropped: the scrub line on top, the buttons underneath. */
+@media (max-width: 600px) {
+  .pl-bar { flex-direction: column; align-items: stretch; gap: 6px; }
+  .pl-buttons { justify-content: flex-end; }
+  .pl-vol { display: none; }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .pl-btn { min-height: 42px; padding: 8px 11px; font-size: 12.5px; }
+  .pl-time { min-width: 40px; font-size: 11.5px; }
+}
+
+/* ---------- users who ask for less motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .pl-top, .pl-bar, .pl-big, .pl-flash { transition: none; animation: none; }
+  .pl-spin { animation-duration: 2.4s; }
+}

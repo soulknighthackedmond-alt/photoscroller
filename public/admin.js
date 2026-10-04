@@ -245,11 +245,102 @@ function accept(files, source) {
   else msg('#uploadMsg', '');
 }
 
+/* A still frame from a video, taken in the browser before it goes up. The server can
+   make one with ffmpeg, but doing it here as well means a video has a thumbnail the
+   moment the upload finishes, and that an iPhone's HEVC clip gets one even on a build
+   with no ffmpeg — the browser that recorded it can always decode it.
+
+   Returns a JPEG Blob, or null. This is a bonus: a clip this browser cannot draw must
+   still upload. */
+const POSTER_W = 640;
+const POSTER_TIMEOUT_MS = 12000;
+
+function posterFrom(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement('video');
+    let done = false;
+
+    const finish = (blob) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      video.removeAttribute('src');
+      try { video.load(); } catch { /* nothing left to release */ }
+      URL.revokeObjectURL(url);
+      resolve(blob || null);
+    };
+
+    /* a clip the browser will not decode, or one that never reports a frame, must not
+       hold the upload up for ever */
+    const timer = setTimeout(() => finish(null), POSTER_TIMEOUT_MS);
+
+    video.preload = 'metadata';
+    video.muted = true;
+    video.playsInline = true;
+    video.setAttribute('playsinline', '');
+    video.setAttribute('muted', '');
+    video.addEventListener('error', () => finish(null));
+
+    video.addEventListener('loadedmetadata', () => {
+      /* a second in is a more representative frame than a black fade-in; a clip shorter
+         than that has nothing there, so the first frame is the fallback */
+      const at = Number.isFinite(video.duration) && video.duration > 1.4 ? 1 : 0;
+      try { video.currentTime = at; } catch { /* seeked will fire from wherever it lands */ }
+    });
+
+    const grab = () => {
+      const w = video.videoWidth;
+      const h = video.videoHeight;
+      if (!w || !h) return finish(null);
+      const scale = Math.min(1, POSTER_W / w);
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(w * scale));
+      canvas.height = Math.max(1, Math.round(h * scale));
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return finish(null);
+      try {
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob((blob) => finish(blob), 'image/jpeg', 0.72);
+      } catch {
+        /* a frame that cannot be read out is not a reason to fail the upload */
+        finish(null);
+      }
+    };
+
+    /* loadeddata covers the clip whose first frame is the one wanted — a seek to 0 never
+       fires seeked, because it is not a seek — and seeked covers the one a second in */
+    video.addEventListener('loadeddata', () => {
+      if (!video.seeking) grab();
+    });
+    video.addEventListener('seeked', grab);
+
+    video.src = url;
+  });
+}
+
+/* The still frames for the videos in one batch, gathered before the request is built so
+   the upload itself stays a single send. */
+async function postersFor(files) {
+  const videos = files.filter((f) => isVideoName(f.name));
+  if (!videos.length) return [];
+  msg('#uploadMsg', 'Reading a still frame from ' + videos.length + ' video' + (videos.length === 1 ? '' : 's') + '…', 'work');
+  const out = [];
+  for (const file of videos) {
+    const blob = await posterFrom(file);
+    if (blob) out.push([file.name, blob]);
+  }
+  return out;
+}
+
 function renderSelectionInfo() {
   const size = selected.reduce((n, f) => n + f.size, 0);
-  $('#dzInfo').textContent = selected.length
-    ? `${selected.length} image${selected.length === 1 ? '' : 's'} · ${mb(size)}`
-    : idleInfo;
+  const videos = selected.filter((f) => isVideoName(f.name)).length;
+  const images = selected.length - videos;
+  const parts = [];
+  if (images) parts.push(images + ' image' + (images === 1 ? '' : 's'));
+  if (videos) parts.push(videos + ' video' + (videos === 1 ? '' : 's'));
+  $('#dzInfo').textContent = selected.length ? parts.join(' + ') + ' · ' + mb(size) : idleInfo;
 }
 
 $('#clearBtn').addEventListener('click', () => {
@@ -262,11 +353,15 @@ $('#clearBtn').addEventListener('click', () => {
 
 /* ---------------- upload ---------------- */
 
-function sendBatch(files, name, slug, onProgress) {
+function sendBatch(files, posters, name, slug, onProgress) {
   return new Promise((resolve, reject) => {
     const form = new FormData();
     form.append('name', name);
     for (const file of files) form.append('photos', file, file.name);
+    /* one still frame per video, named after the video it came from so the server can
+       pair them up. Best effort: a video whose frame could not be grabbed goes without,
+       and the server makes one with ffmpeg instead. */
+    for (const [name2, blob] of posters) form.append('posters', blob, name2);
 
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/albums/' + encodeURIComponent(slug) + '/photos');
@@ -306,7 +401,9 @@ $('#uploadBtn').addEventListener('click', async () => {
     const batch = queue.slice(i, i + BATCH_SIZE);
     msg('#uploadMsg', `Uploading ${i + 1}–${Math.min(i + BATCH_SIZE, total)} of ${total} to “${name}”…`, 'work');
     try {
-      const data = await sendBatch(batch, name, slug, (loaded, len) => {
+      /* the stills are read here, on the uploader's own machine, before the bytes go up */
+      const posters = await postersFor(batch);
+      const data = await sendBatch(batch, posters, name, slug, (loaded, len) => {
         const withinBatch = len ? loaded / len : 0;
         fill.style.width = Math.round(((i + withinBatch * batch.length) / total) * 100) + '%';
       });
