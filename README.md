@@ -141,8 +141,10 @@ served from the same `/i/` route, with byte-range support, so seeking and resumi
   WebM/Matroska `Tracks → Video → PixelWidth`/`PixelHeight` and `Info → Duration`
   elements), so a column reserves the right height and the tile knows its time before a
   byte of video arrives. A recording that was never "faststart"-ed keeps its header at the
-  *end* of the file, so the tail is read as well; a container the reader cannot make sense
-  of falls back to 16:9 and corrects itself when the video loads.
+  *end* of the file, so the tail is read as well; and an index box bigger than the 128 KB
+  read — a long recording's runs to megabytes — is fetched by its own declared size,
+  whether it sits at the front or the end. A container the reader cannot make sense of
+  falls back to 16:9 and corrects itself when the video loads.
 
 ### Where the thumbnails come from
 
